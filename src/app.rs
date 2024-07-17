@@ -1,7 +1,7 @@
 use crate::{default, Error, Result};
-use vector::{xy, uint2, int2};
+use vector::xy;
 use winit::{event_loop::EventLoop, window::{WindowBuilder, Fullscreen},
-	event::{Event, WindowEvent::{Resized,RedrawRequested,CloseRequested,KeyboardInput,CursorMoved,CursorEntered}, KeyEvent, ElementState::Pressed},
+	event::{WindowEvent::{Resized,RedrawRequested,CloseRequested,KeyboardInput,CursorMoved,CursorEntered}, KeyEvent, ElementState::Pressed},
 	keyboard::{Key::{Named, Character}, NamedKey::Escape}};
 use {std::sync::Arc, vulkano::{VulkanLibrary, Validated, VulkanError, instance::{Instance, InstanceCreateInfo, InstanceExtensions},
 	device::{Device, DeviceCreateInfo, DeviceFeatures, DeviceExtensions, physical::PhysicalDeviceType, QueueCreateInfo, QueueFlags},
@@ -14,14 +14,11 @@ use {std::sync::Arc, vulkano::{VulkanLibrary, Validated, VulkanError, instance::
 	sync::{future::{GpuFuture, FenceSignalFuture}, now},
 }};
 use crate::vulkan::Context;
-
+pub use {vector::{uint2, int2}, winit::event::Event};
 
 pub trait App<T> {
-
-	fn event(&mut self, _size: uint2, _pointer_position: int2, _mouse_buttons: u32, _event: Event<()>) -> bool { false }
-
-	fn render(&mut self, context: &Context, commands: &mut RecordingCommandBuffer, join: Option<T>, target: Arc<ImageView>, depth: Option<Arc<ImageView>>) -> Result<bool>;
-
+	fn event(&mut self, size: uint2, pointer_position: int2, mouse_buttons: u32, event: Event<()>) -> bool;
+	fn render(&mut self, context: &Context, commands: &mut RecordingCommandBuffer, join: Option<T>, target: Arc<ImageView>) -> Result<bool>;
 }
 
 pub fn run<T:Send>(title: impl Into<String>, app: Box<dyn std::ops::FnOnce(&Context,&mut RecordingCommandBuffer) -> Result<Box<dyn App<T>>, Error>>) -> Result<(), Error> {
@@ -90,14 +87,10 @@ pub fn run<T:Send>(title: impl Into<String>, app: Box<dyn std::ops::FnOnce(&Cont
 				};
 				if suboptimal { recreate_swapchain = true; }
 				let ref target = targets[target_index as usize];
-				/*if depth.as_ref().filter(|depth| depth.extent() == target.extent()).is_none() {
-					depth = Some(Image::new(context.memory_allocator.clone(), ImageCreateInfo{format: Format::/*D16_UNORM*/D32_SFLOAT/*FIXME*/, extent: target.extent(),
-					usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT, ..default()}, default())?);
-				}*/
 
 				let mut commands = RecordingCommandBuffer::new(context.command_buffer_allocator.clone(), context.queue.queue_family_index(),
 					CommandBufferLevel::Primary, CommandBufferBeginInfo{usage: CommandBufferUsage::OneTimeSubmit, ..default()})?;
-				app.render(&context, &mut commands, None, ImageView::new_default(target.clone())?, None)?;
+				app.render(&context, &mut commands, None, ImageView::new_default(target.clone())?)?;
 
 				previous_frame_end =
 					(Box::new(previous_frame_end.take().map(|fence_signal| fence_signal.boxed()).unwrap_or_else(|| now(context.device.clone()).boxed())

@@ -14,12 +14,14 @@ Ok(image)
 pub use vulkan::{default, Error, Result, throws};
 use image::{rgba, rgba8};
 use {std::sync::Arc, vulkan::Context, vulkano::{memory::allocator::{AllocationCreateInfo, MemoryTypeFilter}, command_buffer::{CopyBufferToImageInfo, RecordingCommandBuffer as Commands}, buffer::{Buffer, BufferCreateInfo, BufferUsage}, image::{Image as GPUImage, ImageType, ImageCreateInfo, ImageUsage, view::ImageView, sampler::{Sampler, SamplerCreateInfo, Filter}}, format::Format, descriptor_set::WriteDescriptorSet}};
-
+use app::{uint2, int2, Event};
+use winit::{event::{Event::WindowEvent,WindowEvent::KeyboardInput,KeyEvent,ElementState::Pressed},keyboard::{Key::Named,NamedKey::{ArrowLeft,ArrowRight}}};
 crate::shader!{quad, Quad}
 
 struct App {
 	quad: Quad,
-	images: Vec<Arc<GPUImage>>
+	images: Vec<Arc<GPUImage>>,
+	index: usize,
 }
 
 impl App {
@@ -50,22 +52,33 @@ impl App {
 			}
 			commands.copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(buffer, image.clone())).unwrap();
 			image
-		}).collect()
+		}).collect(),
+		index: 0,
 	}}
 }
 
 impl app::App<()> for App {
-	fn render(&mut self, context: &Context, commands: &mut Commands, _async: Option<()>, target: Arc<ImageView>, _: Option<Arc<ImageView>>) -> Result<bool> {
+	fn render(&mut self, context: &Context, commands: &mut Commands, _async: Option<()>, target: Arc<ImageView>) -> Result<bool> {
 		let sampler = Sampler::new(context.device.clone(), SamplerCreateInfo{mag_filter: Filter::Linear, min_filter: Filter::Linear, ..default()}).unwrap();
 		self.quad.begin_rendering(context, commands, target.clone(), &[
-			WriteDescriptorSet::image_view(0, ImageView::new_default(self.images[0].clone())?),
+			WriteDescriptorSet::image_view(0, ImageView::new_default(self.images[self.index].clone())?),
 			WriteDescriptorSet::sampler(1, sampler.clone())
 		])?;
 		unsafe{commands.draw(4, 1, 0, 0)}?;
 		commands.end_rendering()?;
 		Ok(false)
 	}
-	//fn event(&mut self, size: uint2, _: int2, mouse_buttons: u32, event: Event<()>) -> bool {}
+	fn event(&mut self, _size: uint2, _: int2, _mouse_buttons: u32, event: Event<()>) -> bool {
+		let WindowEvent{event, ..} = &event else {return false;};
+		match event {
+			KeyboardInput{event: KeyEvent{logical_key: Named(key), state: Pressed, ..}, ..} => match key {
+				ArrowLeft => { self.index = (self.index+self.images.len()-1)%self.images.len(); true },
+				ArrowRight => { self.index = (self.index+1)%self.images.len(); true },
+				_ => false,
+			}
+			_ => false,
+		}
+	}
 }
 
 fn main() -> Result {
