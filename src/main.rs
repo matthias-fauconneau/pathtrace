@@ -1,16 +1,23 @@
 #![allow(incomplete_features)]#![feature(slice_from_ptr_range, array_chunks, iter_array_chunks, inherent_associated_types, anonymous_lifetime_in_impl_trait, f16)]
 mod app; mod vulkan; mod shader;
 use image::{Image, xy};
-fn f32(path: impl AsRef<std::path::Path>) -> Result<Image<Box<[f32]>>> {
+fn exr(path: impl AsRef<std::path::Path>) -> Result<Image<Box<[[f32; 2]]>>> {
 	let exr = exr::prelude::read_first_flat_layer_from_file(path)?.layer_data;
 	let size = {let exr::prelude::Vec2(x,y) = exr.size; xy{x: x as u32,y: y as _}};
-	let mut image = Image::<Box<[f32]>>::uninitialized(size);
+	let mut image = Image::<Box<[[f32; 2]]>>::uninitialized(size);
 	for y in 0..size.y { for x in 0..size.x {
-									let &[exr::prelude::Sample::F32(v)] = exr.sample_vec_at(exr::prelude::Vec2(x as _,y as _)).as_slice() else {unreachable!()};
-									image[xy{x,y}] = v;
+		image[xy{x,y}] = match exr.sample_vec_at(exr::prelude::Vec2(x as _,y as _)).as_slice() {
+			&[exr::prelude::Sample::F32(z), exr::prelude::Sample::F32(a)] => [z,a],
+			&[exr::prelude::Sample::F16(z), exr::prelude::Sample::F16(a)] => [f32::from(z), f32::from(a)],
+			&[exr::prelude::Sample::F32(v)] => [v; 2],
+			&[exr::prelude::Sample::F16(v)] => [f32::from(v); 2],
+			v => unimplemented!("{v:?}")
+		};
 	}}
 Ok(image)
 }
+
+
 pub use vulkan::{default, Error, Result, throws};
 use image::{rgba, rgba8};
 use {std::sync::Arc, vulkan::Context, vulkano::{memory::allocator::{AllocationCreateInfo, MemoryTypeFilter}, command_buffer::{CopyBufferToImageInfo, RecordingCommandBuffer as Commands}, buffer::{Buffer, BufferCreateInfo, BufferUsage}, image::{Image as GPUImage, ImageType, ImageCreateInfo, ImageUsage, view::ImageView, sampler::{Sampler, SamplerCreateInfo, Filter}}, format::Format, descriptor_set::WriteDescriptorSet}};
@@ -83,16 +90,13 @@ impl app::App<()> for App {
 
 fn main() -> Result {
 	let images = std::env::args().skip(1).map(|ref path|
-		if let Ok(image) = f32(path) {
-			let [Some(&min), Some(&max)] = [image.data.iter().min_by(|a,b| f32::total_cmp(a,b)), image.data.iter().max_by(|a,b| f32::total_cmp(a,b))] else {unreachable!()};
-			Image::from_iter(image.size, image.data.iter().map(|&v| {
-				let v = (((v-min)/(max-min))*(0xFF as f32)) as u8; // FIXME: OETF
-				rgba{r: v, g: v, b: v, a: 0xFF}
+		if let Ok(image) = exr(path) {
+			let [Some(&[min,_]), Some(&[max,_])] = [image.data.iter().min_by(|[a,_],[b,_]| f32::total_cmp(a,b)), image.data.iter().max_by(|[a,_],[b,_]| f32::total_cmp(a,b))] else {unreachable!()};
+			Image::from_iter(image.size, image.data.iter().map(|&[z,a]| {
+				let z = (((z-min)/(max-min))*(0xFF as f32)) as u8; // FIXME: OETF
+				rgba{r: z, g: z, b: z, a: 0xFF}
 			}))
-		} else {
-			let image = ::image::u8(path);
-			Image::from_iter(image.size, image.data.iter().map(|&a| rgba{r: a, g: a, b: a, a: 0xFF}))
-		}
+		} else { ::image::rgba8(path) }
 	).collect::<Box<_>>();
 	app::run(std::env::args().skip(1).collect::<Vec<_>>().join(", "), Box::new(move |context,commands| Ok(Box::new(App::new(context, commands, &images)?))))
 }
