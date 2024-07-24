@@ -1,14 +1,14 @@
 use {crate::vulkan::{default, Error, throws, Context}, std::sync::Arc, vulkano::{
 	device::Device,	shader::ShaderModule,
 	command_buffer::{RecordingCommandBuffer, RenderingInfo, RenderingAttachmentInfo},
-	render_pass::AttachmentStoreOp,
+	render_pass::{AttachmentStoreOp,AttachmentLoadOp},
 	image::view::ImageView, format::Format,
 	descriptor_set::{DescriptorSet, WriteDescriptorSet},
 	pipeline::{Pipeline, PipelineShaderStageCreateInfo, PipelineLayout, PipelineBindPoint, layout::PipelineDescriptorSetLayoutCreateInfo, GraphicsPipeline, DynamicState,
 		graphics::{GraphicsPipelineCreateInfo, subpass::PipelineRenderingCreateInfo, viewport::Viewport,
 			rasterization::{RasterizationState, CullMode},
 			depth_stencil::{DepthStencilState, DepthState, CompareOp},
-			color_blend::ColorBlendState
+			color_blend::{ColorBlendState, ColorBlendAttachmentState, AttachmentBlend}
 		}
 	},
 }};
@@ -35,7 +35,8 @@ impl<S:Shader> Pass<S> {
 			rasterization_state: Some(RasterizationState{cull_mode: CullMode::Back, ..default()}),
 			depth_stencil_state: Some(DepthStencilState{depth: Some(DepthState{compare_op: CompareOp::LessOrEqual, ..DepthState::simple()}), ..default()}),
 			multisample_state: Some(default()),
-			color_blend_state: Some(ColorBlendState::with_attachment_states(1, default()/*ColorBlendAttachmentState{blend: Some(AttachmentBlend::alpha()), ..default()}*/)),
+			//color_blend_state: Some(ColorBlendState::with_attachment_states(1, default())),
+			color_blend_state: Some(ColorBlendState::with_attachment_states(1, ColorBlendAttachmentState{blend: Some(AttachmentBlend::alpha()), ..default()})),
 			dynamic_state: [DynamicState::Viewport].into_iter().collect(),
    		subpass: Some(PipelineRenderingCreateInfo{
 				color_attachment_formats: vec![Some(*format)],
@@ -54,7 +55,9 @@ impl<S:Shader> Pass<S> {
 		let [extent@..,_] = target.image().extent().map(|u32| u32 as f32);
 		commands.begin_rendering(RenderingInfo{
 			color_attachments: vec![Some(RenderingAttachmentInfo{
+				load_op: AttachmentLoadOp::Clear,
 				store_op: AttachmentStoreOp::Store,
+				clear_value: Some([1.,0.,1.,0.].into()),
 				..RenderingAttachmentInfo::image_view(target)
 			})],
 			..default()

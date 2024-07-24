@@ -28,7 +28,7 @@ pub fn run<T:Send>(title: impl Into<String>, app: Box<dyn std::ops::FnOnce(&Cont
 	let enabled_layers = if false { vec!["VK_LAYER_KHRONOS_validation".to_owned()] } else { vec![] };
 	let instance = Instance::new(library, InstanceCreateInfo{enabled_extensions, enabled_layers, ..default()})?;
 	let ref window = Arc::new( WindowBuilder::new()
-		.with_fullscreen(Some(Fullscreen::Borderless(event_loop.available_monitors().skip(0).next())))
+		.with_fullscreen(Some(Fullscreen::Borderless(event_loop.available_monitors().nth(2))))
 		.with_title(title)
 		.build(&event_loop)?);
 	let surface = Surface::from_window(instance.clone(), window.clone())?;

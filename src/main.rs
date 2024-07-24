@@ -92,7 +92,7 @@ fn main() -> Result {
 	let images = std::env::args().skip(1).map(|ref path|
 		if let Ok(image) = exr(path) {
 			let [Some(&[min,_]), Some(&[max,_])] = [image.data.iter().min_by(|[a,_],[b,_]| f32::total_cmp(a,b)), image.data.iter().max_by(|[a,_],[b,_]| f32::total_cmp(a,b))] else {unreachable!()};
-			Image::from_iter(image.size, image.data.iter().map(|&[z,a]| {
+			Image::from_iter(image.size, image.data.iter().map(|&[z,_a]| {
 				let z = (((z-min)/(max-min))*(0xFF as f32)) as u8; // FIXME: OETF
 				rgba{r: z, g: z, b: z, a: 0xFF}
 			}))
