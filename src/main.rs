@@ -9,8 +9,8 @@ fn exr(path: impl AsRef<std::path::Path>) -> Result<Image<Box<[[f32; 2]]>>> {
 		image[xy{x,y}] = match exr.sample_vec_at(exr::prelude::Vec2(x as _,y as _)).as_slice() {
 			&[exr::prelude::Sample::F32(z), exr::prelude::Sample::F32(a)] => [z,a],
 			&[exr::prelude::Sample::F16(z), exr::prelude::Sample::F16(a)] => [f32::from(z), f32::from(a)],
-			&[exr::prelude::Sample::F32(v)] => [v; 2],
-			&[exr::prelude::Sample::F16(v)] => [f32::from(v); 2],
+			&[exr::prelude::Sample::F32(v)] => [v, 1.],
+			&[exr::prelude::Sample::F16(v)] => [f32::from(v), 1.],
 			v => unimplemented!("{v:?}")
 		};
 	}}
@@ -19,7 +19,7 @@ Ok(image)
 
 
 pub use vulkan::{default, Error, Result, throws};
-use image::{rgba, rgba8};
+use image::{rgba, rgba8, sRGB8_OETF12, oetf8_12};
 use {std::sync::Arc, vulkan::Context, vulkano::{memory::allocator::{AllocationCreateInfo, MemoryTypeFilter}, command_buffer::{CopyBufferToImageInfo, RecordingCommandBuffer as Commands}, buffer::{Buffer, BufferCreateInfo, BufferUsage}, image::{Image as GPUImage, ImageType, ImageCreateInfo, ImageUsage, view::ImageView, sampler::{Sampler, SamplerCreateInfo, Filter}}, format::Format, descriptor_set::WriteDescriptorSet}};
 use app::{uint2, int2, Event};
 use winit::{event::{Event::WindowEvent,WindowEvent::KeyboardInput,KeyEvent,ElementState::Pressed},keyboard::{Key::Named,NamedKey::{ArrowLeft,ArrowRight}}};
@@ -89,12 +89,24 @@ impl app::App<()> for App {
 }
 
 fn main() -> Result {
+	let mut min_max = None;
 	let images = std::env::args().skip(1).map(|ref path|
 		if let Ok(image) = exr(path) {
 			let [Some(&[min,_]), Some(&[max,_])] = [image.data.iter().min_by(|[a,_],[b,_]| f32::total_cmp(a,b)), image.data.iter().max_by(|[a,_],[b,_]| f32::total_cmp(a,b))] else {unreachable!()};
-			Image::from_iter(image.size, image.data.iter().map(|&[z,_a]| {
-				let z = (((z-min)/(max-min))*(0xFF as f32)) as u8; // FIXME: OETF
-				rgba{r: z, g: z, b: z, a: 0xFF}
+			println!("{} {}", min, max);
+			if false { // Prints histogram
+				let mut histogram = vec![0; 0x100];
+				for [z,_] in &image.data { histogram[((z-min)/(max-min)*(0xFF as f32)) as usize] += 1; }
+				println!("{histogram:?}");
+			}
+			// Tonemaps all float images to match first
+			let [min, max] = min_max.unwrap_or([min, max]);
+			min_max = Some([min, max]);
+			let oetf = &sRGB8_OETF12;
+			Image::from_iter(image.size, image.data.iter().map(|&[z,a]| {
+				let z = oetf8_12(oetf, ((z-min)/(max-min)).clamp(0., 1.));
+				assert!(a >= 0. && a <= 1., "{a}");
+				rgba{r: z, g: z, b: z, a: (a*(0xFF as f32)) as u8}
 			}))
 		} else { ::image::rgba8(path) }
 	).collect::<Box<_>>();
