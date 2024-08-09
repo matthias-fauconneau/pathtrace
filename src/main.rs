@@ -1,4 +1,5 @@
-#![allow(incomplete_features)]#![feature(slice_from_ptr_range, array_chunks, iter_array_chunks, inherent_associated_types, anonymous_lifetime_in_impl_trait, f16)]
+#![feature(slice_from_ptr_range, let_chains)]
+//#![allow(incomplete_features)]#![feature(slice_from_ptr_range, array_chunks, iter_array_chunks, inherent_associated_types, anonymous_lifetime_in_impl_trait, f16, let_chains)]
 mod app; mod vulkan; mod shader;
 use image::{Image, xy};
 fn exr(path: impl AsRef<std::path::Path>) -> Result<Image<Box<[[f32; 2]]>>> {
@@ -88,30 +89,43 @@ impl app::App<()> for App {
 	}
 }
 
+pub fn n(size: uint2, p: uint2, d: int2) -> uint2 { xy{x:((p.x as i32+d.x) as u32+size.x)%size.x,y:(p.y as i32+d.y) as u32} }
+pub fn draw_cross(target: &mut Image<impl std::ops::DerefMut<Target=[rgba8]>>, center: uint2, color: rgba8) {
+	let mut set = |d| if let Some(p) = target.get_mut(n(target.size, center, d)) {*p = color; };
+	for y in -64..64 { set(xy{x: -1, y}); set(xy{x: 0, y}); set(xy{x: 1, y}); }
+	for x in -64..64 { set(xy{x, y: -1}); set(xy{x, y: 0}); set(xy{x, y: 1}); }
+}
+
 fn main() -> Result {
 	let mut min_max = None;
-	let images = std::env::args().skip(1).map(|ref path|
-		if let Ok(image) = exr(path) {
-			let [Some(&[min,_]), Some(&[max,_])] = [image.data.iter().min_by(|[a,_],[b,_]| f32::total_cmp(a,b)), image.data.iter().max_by(|[a,_],[b,_]| f32::total_cmp(a,b))] else {unreachable!()};
-			println!("{} {}", min, max);
-			if false { // Prints histogram
-				let mut histogram = vec![0; 0x100];
-				for [z,_] in &image.data { histogram[((z-min)/(max-min)*(0xFF as f32)) as usize] += 1; }
-				println!("{histogram:?}");
-			}
-			// Tonemaps all float images to match first
-			let [min, max] = min_max.unwrap_or([min, max]);
-			min_max = Some([min, max]);
-			let oetf = &sRGB8_OETF12;
-			Image::from_iter(image.size, image.data.iter().map(|&[z,a]| {
-				let z = oetf8_12(oetf, ((z-min)/(max-min)).clamp(0., 1.));
-				assert!(a >= 0. && a <= 1., "{a}");
-				rgba{r: z, g: z, b: z, a: (a*(0xFF as f32)) as u8}
-			}))
-		} else {
-			::image::rgba8(path)
-			.map(|_,&rgba{r,g,b,..}| rgba{r,g,b,a:0xFF})
+	let mut images = vec![];
+	let mut cross = vec![];
+	for arg in std::env::args().skip(1) {
+		if let Some(("",xy)) = arg.split_once("cross:") && let Some((x,y)) = xy.split_once(",") { cross.push(xy{x,y}.map(|x| x.parse().unwrap())); }
+		else {
+			let mut image = if let Ok(image) = exr(&arg) {
+				let [Some(&[min,_]), Some(&[max,_])] = [image.data.iter().min_by(|[a,_],[b,_]| f32::total_cmp(a,b)), image.data.iter().max_by(|[a,_],[b,_]| f32::total_cmp(a,b))] else {unreachable!()};
+				println!("{} {}", min, max);
+				if false { // Prints histogram
+					let mut histogram = vec![0; 0x100];
+					for [z,_] in &image.data { histogram[((z-min)/(max-min)*(0xFF as f32)) as usize] += 1; }
+					println!("{histogram:?}");
+				}
+				// Tonemaps all float images to match first
+				let [min, max] = min_max.unwrap_or([min, max]);
+				min_max = Some([min, max]);
+				let oetf = &sRGB8_OETF12;
+				Image::from_iter(image.size, image.data.iter().map(|&[z,a]| {
+					let z = oetf8_12(oetf, ((z-min)/(max-min)).clamp(0., 1.));
+					assert!(a >= 0. && a <= 1., "{a}");
+					rgba{r: z, g: z, b: z, a: (a*(0xFF as f32)) as u8}
+				}))
+			} else {
+				::image::rgba8(arg).map(|rgba{r,g,b,..}| rgba{r,g,b,a:0xFF})
+			};
+			for &cross in &cross { draw_cross(&mut image, cross, rgba{r: 0xFF, g: 0, b: 0xFF, a: 0xFF}); }
+			images.push(image);
 		}
-	).collect::<Box<_>>();
+	}
 	app::run(std::env::args().skip(1).collect::<Vec<_>>().join(", "), Box::new(move |context,commands| Ok(Box::new(App::new(context, commands, &images)?))))
 }

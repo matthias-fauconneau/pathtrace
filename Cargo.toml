@@ -14,4 +14,3 @@ exr = '*'
 [build-dependencies]
 naga = {version='*', features = ['wgsl-in','spv-out']}
 bytemuck = {version='*'}
-
