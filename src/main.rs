@@ -108,7 +108,10 @@ fn main() -> Result {
 				assert!(a >= 0. && a <= 1., "{a}");
 				rgba{r: z, g: z, b: z, a: (a*(0xFF as f32)) as u8}
 			}))
-		} else { ::image::rgba8(path) }
+		} else {
+			::image::rgba8(path)
+			.map(|_,&rgba{r,g,b,..}| rgba{r,g,b,a:0xFF})
+		}
 	).collect::<Box<_>>();
 	app::run(std::env::args().skip(1).collect::<Vec<_>>().join(", "), Box::new(move |context,commands| Ok(Box::new(App::new(context, commands, &images)?))))
 }
