@@ -20,7 +20,8 @@ Ok(image)
 
 
 pub use vulkan::{default, Error, Result, throws};
-use image::{rgba, rgba8, sRGB8_OETF12, oetf8_12};
+use vector::MinMax;
+use image::{rgb, rgba, rgba8, lerp_rgb8, sRGB8_OETF12, oetf8_12};
 use {std::sync::Arc, vulkan::Context, vulkano::{memory::allocator::{AllocationCreateInfo, MemoryTypeFilter}, command_buffer::{CopyBufferToImageInfo, RecordingCommandBuffer as Commands}, buffer::{Buffer, BufferCreateInfo, BufferUsage}, image::{Image as GPUImage, ImageType, ImageCreateInfo, ImageUsage, view::ImageView, sampler::{Sampler, SamplerCreateInfo, Filter}}, format::Format, descriptor_set::WriteDescriptorSet}};
 use app::{uint2, int2, Event};
 use winit::{event::{Event::WindowEvent,WindowEvent::KeyboardInput,KeyEvent,ElementState::Pressed},keyboard::{Key::Named,NamedKey::{ArrowLeft,ArrowRight}}};
@@ -89,19 +90,44 @@ impl app::App<()> for App {
 	}
 }
 
+use std::ops::DerefMut;
 pub fn n(size: uint2, p: uint2, d: int2) -> uint2 { xy{x:((p.x as i32+d.x) as u32+size.x)%size.x,y:(p.y as i32+d.y) as u32} }
-pub fn draw_cross(target: &mut Image<impl std::ops::DerefMut<Target=[rgba8]>>, center: uint2, color: rgba8) {
+pub fn draw_cross(target: &mut Image<impl DerefMut<Target=[rgba8]>>, center: uint2, color: rgba8) {
 	let mut set = |d| if let Some(p) = target.get_mut(n(target.size, center, d)) {*p = color; };
 	for y in -64..64 { set(xy{x: -1, y}); set(xy{x: 0, y}); set(xy{x: 1, y}); }
 	for x in -64..64 { set(xy{x, y: -1}); set(xy{x, y: 0}); set(xy{x, y: 1}); }
+}
+
+pub fn draw_box(target: &mut Image<impl DerefMut<Target=[rgba8]>>, MinMax{min, max}: MinMax<int2>, color: rgba8) {
+	fn set(target: &mut Image<impl DerefMut<Target=[rgba8]>>, xy{x,y}: int2, color: rgba8) {
+		let size = target.size;
+		target[xy{x: u32::try_from(x+size.x as i32).unwrap()%size.x, y: y as u32}] = color;
+	}
+	fn blend(target: &mut Image<impl DerefMut<Target=[rgba8]>>, xy{x,y}: int2, color: rgba8) {
+		let size = target.size;
+		let p = &mut target[xy{x: u32::try_from(x+size.x as i32).unwrap()%size.x, y: y as u32}];
+		let rgb{r,g,b} = lerp_rgb8(color.a as f32/(0xFF as f32)/2., p.rgb(), color.rgb());
+		*p = rgba{r,g,b,a: p.a};
+	}
+	if min.y >= 0 { for x in min.x..max.x { set(target, xy{x, y: min.y}, color); } }
+	for y in min.y.max(0)..max.y.min(target.size.y as i32) {
+		set(target, xy{x: min.x, y}, color);
+		for x in min.x..max.x { blend(target, xy{x, y}, color); }
+		set(target, xy{x: max.x, y: y}, color);
+	}
+	if max.y < target.size.y as i32 { for x in min.x..max.x { set(target, xy{x, y: max.y}, color); } }
 }
 
 fn main() -> Result {
 	let mut min_max = None;
 	let mut images = vec![];
 	let mut cross = vec![];
+	let mut rect = vec![];
 	for arg in std::env::args().skip(1) {
-		if let Some(("",xy)) = arg.split_once("cross:") && let Some((x,y)) = xy.split_once(",") { cross.push(xy{x,y}.map(|x| x.parse().unwrap())); }
+		if let Some(("",min_max)) = arg.split_once("box:") && let Some((min,max)) = min_max.split_once("x") {
+			rect.push(MinMax{min,max}.map(|xy| xy::from(xy.split_once(",").unwrap()).map(|x:&str| x.parse::<i32>().unwrap())));
+		}
+		else if let Some(("",xy)) = arg.split_once("cross:") && let Some((x,y)) = xy.split_once(",") { cross.push(xy{x,y}.map(|x| x.parse().unwrap())); }
 		else {
 			let mut image = if let Ok(image) = exr(&arg) {
 				let [Some(&[min,_]), Some(&[max,_])] = [image.data.iter().min_by(|[a,_],[b,_]| f32::total_cmp(a,b)), image.data.iter().max_by(|[a,_],[b,_]| f32::total_cmp(a,b))] else {unreachable!()};
@@ -121,8 +147,9 @@ fn main() -> Result {
 					rgba{r: z, g: z, b: z, a: (a*(0xFF as f32)) as u8}
 				}))
 			} else {
-				::image::rgba8(arg).map(|rgba{r,g,b,..}| rgba{r,g,b,a:0xFF})
+				::image::rgba8(arg)//.map(|rgba{r,g,b,..}| rgba{r,g,b,a:0xFF})
 			};
+			for &rect in &rect { draw_box(&mut image, rect, rgba{r: 0xFF, g: 0, b: 0xFF, a: 0xFF}); }
 			for &cross in &cross { draw_cross(&mut image, cross, rgba{r: 0xFF, g: 0, b: 0xFF, a: 0xFF}); }
 			images.push(image);
 		}
