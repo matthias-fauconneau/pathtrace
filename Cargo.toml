@@ -1,15 +1,14 @@
-package= {name= 'view', version= '0.1.0', edition='2021'}
+package= {name= 'view', version= '0.1.0', edition='2024'}
 
 [dependencies]
 anyhow='*'
 fehler='*'
-bytemuck = {version='*', features=['derive']}
+bytemuck = {version='*', features=['derive','extern_crate_alloc']}
 vector={git='https://github.com/Matthias-Fauconneau/vector'}
-image={git='https://github.com/Matthias-Fauconneau/image', features=['new_uninit','io']}
+image={git='https://github.com/Matthias-Fauconneau/image',features=['exr']}
 winit = {version='0.29', default-features = false, features = ['wayland','rwh_06']}
 vulkano = {git='https://github.com/Matthias-Fauconneau/vulkano'}
 vulkano-shaders = {git='https://github.com/Matthias-Fauconneau/vulkano'}
-exr = '*'
 
 [build-dependencies]
 naga = {version='*', features = ['wgsl-in','spv-out']}

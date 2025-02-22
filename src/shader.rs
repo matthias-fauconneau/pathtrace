@@ -84,7 +84,7 @@ impl<S:Shader> Pass<S> {
 			use super::*;
 			impl $crate::shader::Shader for Shader {
 				fn load(device: Arc<Device>)->Result<Arc<ShaderModule>,Validated<VulkanError>> {
-					extern "C" {
+					unsafe extern "C" {
 						#[link_name=concat!(concat!("_binary_", stringify!($name)), "_spv_start")] static start: [u8; 1];
 						#[link_name=concat!(concat!("_binary_", stringify!($name)), "_spv_end")] static end: [u8; 1];
 					}
