@@ -1,0 +1,13 @@
+[
+	{
+		"label": "View",
+		"command": "cargo", "args": ["run" , "--release", "--", "/div2k"],
+		"use_new_terminal": false,
+		"allow_concurrent_runs": false,
+		"reveal": "no_focus",
+		"reveal_target": "dock",
+		"hide": "never",
+		"show_summary": false,
+		"show_command": false
+	}
+]
