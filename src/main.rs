@@ -1,7 +1,7 @@
 #![feature(slice_from_ptr_range,iter_next_chunk)]#![allow(non_snake_case,non_upper_case_globals)]
 use ui::{Result, run, Widget, size, int2, vulkan, shader};
 use vulkan::{Context, Commands, Arc, image as upload, PrimitiveTopology, ImageView, WriteDescriptorSet, linear};
-use image::{Image, rgb, rgbf, bilinear_sample, sRGB8_OETF12, oetf8_12_rgb, rgba8};
+use image::{Image, rgb, rgbf, bilinear_sample_wrap_x_clamp_y, sRGB8_OETF12, oetf8_12_rgb, rgba8};
 use {std::f32::consts::PI, num::{sq, sqrt, sin, cos, tan, acos, atan, sign, abs}, vector::{xy, vec2, xyz, vec3, normalize, cross, dot, norm}};
 fn exp(x: f32) -> f32 { f32::exp(x) }
 fn pow(x: f32, k: f32) -> f32 { f32::powf(x, k) }
@@ -39,7 +39,7 @@ fn getValFromLUT(ref LUT: Image<&[rgbf]>, pos: vec3 , sunDir: vec3) -> rgbf {
 		x: (LUT.size.x-1) as f32*max(0., min(1., 1./2. + sunCosZenithAngle/2.)),
 		y: (LUT.size.y-1) as f32*max(0., min(1., (height - groundRadiusMM)/(atmosphereRadiusMM - groundRadiusMM)))
 	};
-	bilinear_sample(LUT, uv)
+	bilinear_sample_wrap_x_clamp_y(LUT, uv)
 }
 
 const groundRadiusMM : f32 = 6.360;
@@ -155,8 +155,8 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 
 	let tLUTRes = xy{x: 256, y: 64};
 	let transmittanceLUT = Image::from_xy(tLUTRes, |fragCoord| {
-		let u = fragCoord.x.clamp(0, tLUTRes.x-1) as f32/tLUTRes.x as f32;
-		let v = fragCoord.y.clamp(0, tLUTRes.y-1) as f32/tLUTRes.y as f32;
+		let u = fragCoord.x as f32/(tLUTRes.x-1) as f32;
+		let v = fragCoord.y as f32/(tLUTRes.y-1) as f32;
 		let sunCosTheta = 2.*u - 1.;
 		let sunTheta = acos(sunCosTheta);
 		let height = mix(groundRadiusMM, atmosphereRadiusMM, v);
@@ -167,8 +167,8 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 
 	let msLUTRes = xy{x: 32, y: 32};
 	let multipleScatteringLUT = Image::from_xy(msLUTRes, |fragCoord| {
-		let u = fragCoord.x.clamp(0, msLUTRes.x-1) as f32/msLUTRes.x as f32;
-		let v = fragCoord.y.clamp(0, msLUTRes.y-1) as f32/msLUTRes.y as f32;
+		let u = fragCoord.x as f32/(msLUTRes.x-1) as f32;
+		let v = fragCoord.y as f32/(msLUTRes.y-1) as f32;
 		let sunCosTheta = 2.*u - 1.;
 		let sunTheta = acos(sunCosTheta);
 		let height = mix(groundRadiusMM, atmosphereRadiusMM, v);
@@ -252,7 +252,7 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
             let azimuthAngle = atan(sinTheta, cosTheta) + PI;
             let v = 0.5 + 0.5*sign(altitudeAngle)*sqrt(abs(altitudeAngle)*2.0/PI); // Non-linear mapping of altitude angle. See Section 5.3 of the paper.
             let uv = xy{x: azimuthAngle / (2.*PI), y: v};
-            bilinear_sample(skyLUT, uv*vec2::from(skyLUT.size))
+            bilinear_sample_wrap_x_clamp_y(skyLUT, uv*vec2::from(skyLUT.size))
         }
 
         //rgb{r: rayDir.x, g: rayDir.y, b: rayDir.z}
