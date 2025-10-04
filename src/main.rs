@@ -1,5 +1,5 @@
 #![feature(slice_from_ptr_range,iter_next_chunk)]#![allow(non_snake_case,non_upper_case_globals)]
-use ui::{Result, run, Widget, size, int2, vulkan, shader};
+use ui::{Result, run, Widget, size, int2, vulkan, shader, EventContext, Event};
 use vulkan::{Context, Commands, Arc, Image as GPUImage, image as upload, PrimitiveTopology, ImageView, WriteDescriptorSet, linear};
 use image::{Image, rgb, rgbf, bilinear_sample_wrap_x_clamp_y, rgba8};
 use {std::f32::consts::PI, num::{sq, sqrt, sin, cos, acos, abs}, vector::{xy, vec2, xyz, vec3, normalize, dot, norm}};
@@ -78,7 +78,8 @@ fn mie_phase(cos_theta: f32) -> f32 {
 }
 fn rayleigh_phase(cos_theta: f32) -> f32 { 3./(16.*PI)*(1.+cos_theta*cos_theta) }
 
-fn sky(context: &Context, commands: &mut Commands) -> Result<Arc<GPUImage>> {
+type Tables = (Image<Box<[rgbf]>>, Image<Box<[rgbf]>>);
+fn tables() -> Tables {
 	let transmittance_size = xy{x: 256, y: 64};
 	let transmittance_table = Image::from_xy(transmittance_size, |xy{x,y}| {
 		let u = x as f32/transmittance_size.x as f32;
@@ -148,13 +149,14 @@ fn sky(context: &Context, commands: &mut Commands) -> Result<Arc<GPUImage>> {
 		}}
     	luminance_total  / (rgb::from(1.) - factor_multiple_scattering) // psi
 	});
+	(transmittance_table, multiple_scattering_table)
+}
 
+fn sky((transmittance_table, multiple_scattering): &Tables, altitude: f32, context: &Context, commands: &mut Commands) -> Result<Arc<GPUImage>> {
 	const view_position_y : f32 = ground_radius_Mm + 0.0002; // 200m above the ground.
 	const view_position : vec3 = xyz{x: 0., y: view_position_y, z: 0.};
-
-	let altitude = 0.;
 	let sun_direction = xyz{x: 0., y: sin(altitude), z: -cos(altitude)};
-
+	
 	let sky_size = xy{x: 200, y: 100};
 	let sky_table = Image::from_xy(sky_size, |xy| {
 		let xy{x: u, y: v} = vec2::from(xy)/vec2::from(sky_size);
@@ -183,7 +185,7 @@ fn sky(context: &Context, commands: &mut Commands) -> Result<Arc<GPUImage>> {
 			let (rayleigh_scattering, mie_scattering, extinction) = scattering_extinction(new_position);
 			let sample_transmittance = extinction.map(|e| exp(-dt*e));
 			let sun_transmittance = lookup(transmittance_table.as_ref(), new_position, sun_direction);
-			let psi_multiple_scattering = lookup(multiple_scattering_table.as_ref(), new_position, sun_direction);
+			let psi_multiple_scattering = lookup(multiple_scattering.as_ref(), new_position, sun_direction);
 			let rayleigh_inscattering = rayleigh_scattering*(rayleigh_phase*sun_transmittance + psi_multiple_scattering);
 			let mie_inscattering = mie_scattering*(mie_phase*sun_transmittance + psi_multiple_scattering);
 			let inscattering = rayleigh_inscattering + mie_inscattering;
@@ -199,25 +201,39 @@ fn sky(context: &Context, commands: &mut Commands) -> Result<Arc<GPUImage>> {
 
 struct App {
 	pass: sky::Pass,
+	tables: Tables,
+	altitude: f32,
+	last_altitude: f32,
 	sky: Arc<GPUImage>,
 }
 impl App {
 	fn new(context: &Context, commands: &mut Commands) -> Result<Self> {
-		Ok(Self{pass: sky::Pass::new(context, false, PrimitiveTopology::TriangleList, false)?, sky: sky(context, commands)?})
+		let tables = tables();
+		Ok(Self{pass: sky::Pass::new(context, false, PrimitiveTopology::TriangleList, false)?, altitude: 0., last_altitude: 0., sky: sky(&tables, 0., context, commands)?, tables})
 	}
 }
-
 impl Widget for App {
 fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, _: size, _: int2) -> Result<()> {
-	let Self{pass, sky} = self;
-	pass.begin_rendering(context, commands, target.clone(), None, true, &sky::Uniforms::empty(), &[
-		WriteDescriptorSet::image_view(0, ImageView::new_default(&sky)?),
-		WriteDescriptorSet::sampler(1, linear(context)),
+	let Self{pass, tables, altitude, last_altitude, sky} = self;
+	if altitude != last_altitude {
+		*sky = self::sky(&tables, *altitude, context, commands)?;
+		*last_altitude = *altitude;
+	}
+	pass.begin_rendering(context, commands, target.clone(), None, true, &sky::Uniforms{altitude: *altitude}, &[
+		WriteDescriptorSet::image_view(1, ImageView::new_default(&sky)?),
+		WriteDescriptorSet::sampler(2, linear(context)),
 	])?;
 	unsafe{commands.draw(3, 1, 0, 0)}?;
 	commands.end_rendering()?;
 	Ok(())
 }
+fn event(&mut self, _: &Context, _: &mut Commands, size: size, _: &mut EventContext, event: &Event) -> Result<bool> { Ok(match event {
+	Event::Motion{position, ..} => {
+		self.altitude = (1. - position.y as f32 / size.y as f32) * PI/2.;
+		true
+	}
+	_ => false,
+})}
 }
 
 fn main() -> Result { run("pathtrace", Box::new(|context, commands| Ok(Box::new(App::new(context, commands)?)))) }

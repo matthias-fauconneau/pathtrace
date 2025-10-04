@@ -1,5 +1,7 @@
-@group(0) @binding(0) var image: texture_2d<f32>;
-@group(0) @binding(1) var linear: sampler;
+struct Uniforms { altitude : f32 }
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var image: texture_2d<f32>;
+@group(0) @binding(2) var linear: sampler;
 
 struct VertexOutput {
 	@builtin(position) position: vec4<f32>,
@@ -21,15 +23,15 @@ const texture_coordinates  = array(vec2(0., 0.), vec2(0., 2.), vec2(2., 0.));
 	let view_height_scale = view_width_scale*2160./3840.;
 	let view_right = normalize(cross(view_direction, vec3(0., 1., 0.)));
 	let view_up = normalize(cross(view_right, view_direction));
-	let vertex_position = vertex.texture_coordinates * 2. - 1.; // ?
+	//let vertex_position = vertex.texture_coordinates * 2. - 1.; // FIXME: vertex.position is weird
+	let vertex_position = vertex.texture_coordinates * 2. - vec2(1., 2.); // Horizon on bottom edge
 	let ray_direction = normalize(view_direction + vertex_position.x*view_width_scale*view_right - vertex_position.y*view_height_scale*view_up);
 	let up = vec3(0., 1., 0.);
 	const ground_radius_Mm : f32 = 6.360;
 	const view_position_y : f32 = ground_radius_Mm + 0.0002; // 200m above the ground.
 	let horizon_angle = acos(sqrt(view_position_y * view_position_y - ground_radius_Mm * ground_radius_Mm) / view_position_y);
 	let altitude_angle = horizon_angle - acos(dot(ray_direction, up)); // Between -PI/2 and PI/2
-	let altitude = 0.;
-	let sun_direction = vec3(0., sin(altitude), -cos(altitude));
+	let sun_direction = vec3(0., sin(uniforms.altitude), -cos(uniforms.altitude));
 	let right = cross(sun_direction, up);
 	let forward = cross(up, right);
 	let projected_direction = normalize(ray_direction - dot(ray_direction, up)*up);
