@@ -2,14 +2,13 @@
 use ui::{Result, run, Widget, size, int2, vulkan, shader};
 use vulkan::{Context, Commands, Arc, image as upload, PrimitiveTopology, ImageView, WriteDescriptorSet, linear};
 use image::{Image, rgb, rgbf, bilinear_sample_wrap_x_clamp_y, sRGB8_OETF12, oetf8_12_rgb, rgba8};
-use {std::f32::consts::PI, num::{sq, sqrt, sin, cos, tan, acos, atan, sign, abs}, vector::{xy, vec2, xyz, vec3, normalize, cross, dot, norm}};
+use {std::f32::consts::PI, num::{sq, sqrt, sin, cos, acos, abs}, vector::{xy, vec2, xyz, vec3, normalize, dot, norm}};
+use {num::{tan, atan, sign}, vector::cross};
 fn exp(x: f32) -> f32 { f32::exp(x) }
 fn pow(x: f32, k: f32) -> f32 { f32::powf(x, k) }
-fn min(a: f32, b: f32) -> f32 { f32::min(a, b) }
+//fn min(a: f32, b: f32) -> f32 { f32::min(a, b) }
 fn max(a: f32, b: f32) -> f32 { f32::max(a, b) }
-//fn clamp(x: f32, min: f32, max: f32) -> f32 { f32::clamp(x, min, max) }
 fn mix(x: f32, y: f32, a: f32) -> f32 { x*(1.-a)+y*a }
-#[track_caller] fn check(v: rgbf) -> rgbf { for c in v.into_iter() { assert!(c.is_finite()); } v }
 shader!{view}
 
 struct App {
@@ -22,249 +21,191 @@ impl App {
 }
 
 // https://www.shadertoy.com/view/slSXRW
-fn getSphericalDir(theta : f32, phi: f32) -> vec3 { xyz{x: sin(phi)*sin(theta), y: cos(phi), z: sin(phi)*cos(theta)} }
-fn rayIntersectSphere(ro: vec3, rd : vec3, radius: f32) -> f32 {
-	let b = dot(ro, rd);
-	let c = dot(ro, ro) - radius*radius;
+fn spherical(theta : f32, phi: f32) -> vec3 { xyz{x: sin(phi)*sin(theta), y: cos(phi), z: sin(phi)*cos(theta)} }
+fn intersect_ray_sphere(origin: vec3, direction : vec3, radius: f32) -> f32 {
+	let b = dot(origin, direction);
+	let c = dot(origin, origin) - radius*radius;
 	if c > 0. && b > 0. { return -1.; }
 	let discriminant = b*b - c;
 	if discriminant < 0. { return -1.; }
 	if discriminant > b*b { -b + sqrt(discriminant) } else { -b - sqrt(discriminant) }
 }
 
-fn getValFromLUT(ref LUT: Image<&[rgbf]>, pos: vec3 , sunDir: vec3) -> rgbf {
-	let height = norm(pos);
-	let up = pos / height;
-	let sunCosZenithAngle = dot(sunDir, up);
+const ground_radius_Mm : f32 = 6.360;
+const atmosphere_radius_Mm : f32 = 6.460;
+const ground_albedo : rgbf = rgb{r: 0.3, g: 0.3, b: 0.3};
+
+fn lookup(ref LUT: Image<&[rgbf]>, position: vec3 , sunDir: vec3) -> rgbf {
+	let height = norm(position);
+	let up = position / height;
+	let cos_zenith = dot(sunDir, up);
 	let uv = xy{
-		x: LUT.size.x as f32*max(0., min(1., 1./2. + sunCosZenithAngle/2.)),
-		y: LUT.size.y as f32*max(0., min(1., (height - groundRadiusMM)/(atmosphereRadiusMM - groundRadiusMM)))
+		x: LUT.size.x as f32*(1./2. + cos_zenith/2.)/*.clamp(0., 1.)*/,
+		y: LUT.size.y as f32*((height - ground_radius_Mm)/(atmosphere_radius_Mm - ground_radius_Mm))/*.clamp(0., 1.)*/
 	};
 	bilinear_sample_wrap_x_clamp_y(LUT, uv)
 }
 
-const groundRadiusMM : f32 = 6.360;
-const atmosphereRadiusMM : f32 = 6.460;
-const groundAlbedo : rgbf = rgb{r: 0.3, g: 0.3, b: 0.3};
-
-fn getScatteringValues(pos: vec3) -> (rgbf, f32, rgbf) {
-	let altitudeKM = (norm(pos)-groundRadiusMM)*1000.0;
-	//assert!(altitudeKM >= 0., "{pos:?} {} {altitudeKM}", norm(pos));
-	let rayleighDensity = exp(-altitudeKM/8.0);
-	let mieDensity = exp(-altitudeKM/1.2);
-	const rayleighScatteringBase : rgbf = rgb{r: 5.802, g: 13.558, b: 33.1};
-	let rayleighScattering = rayleighDensity*rayleighScatteringBase;
-	const mieScatteringBase : f32 = 3.996;
-	const mieAbsorptionBase : f32 = 4.4;
-	let mieScattering = mieScatteringBase*mieDensity;
-	let mieAbsorption = mieAbsorptionBase*mieDensity;
-	const ozoneAbsorptionBase : rgbf = rgb{r: 0.650, g: 1.881, b: 0.085};
-	let ozoneAbsorption = max(0.0, 1.0 - abs(altitudeKM-25.0)/15.0)*ozoneAbsorptionBase;
-	let extinction = rayleighScattering + rgbf::from(mieScattering) + rgbf::from(mieAbsorption) + ozoneAbsorption;
-	(rayleighScattering, mieScattering, extinction)
+fn scattering_extinction(position: vec3) -> (rgbf, f32, rgbf) {
+	let altitude_km = (norm(position)-ground_radius_Mm)*1000.0;
+	let rayleigh_density = exp(-altitude_km/8.0);
+	let mie_density = exp(-altitude_km/1.2);
+	const rayleigh_scattering_base : rgbf = rgb{r: 5.802, g: 13.558, b: 33.1};
+	let rayleigh_scattering = rayleigh_density*rayleigh_scattering_base;
+	const mie_scattering_base : f32 = 3.996;
+	const mie_absorption_base : f32 = 4.4;
+	let mie_scattering = mie_scattering_base*mie_density;
+	let mie_absorption = mie_absorption_base*mie_density;
+	const ozone_absorption_base : rgbf = rgb{r: 0.650, g: 1.881, b: 0.085};
+	let ozone_absorption = max(0.0, 1.0 - abs(altitude_km-25.0)/15.0)*ozone_absorption_base;
+	let extinction = rayleigh_scattering + rgbf::from(mie_scattering) + rgbf::from(mie_absorption) + ozone_absorption;
+	(rayleigh_scattering, mie_scattering, extinction)
 }
 
-fn getSunTransmittance(pos: vec3, sunDir: vec3) -> rgbf {
-	if rayIntersectSphere(pos, sunDir, groundRadiusMM) >= 0. { return rgbf::from(0.0); }
-	let atmoDist = rayIntersectSphere(pos, sunDir, atmosphereRadiusMM);
-	assert!(atmoDist > 0., "{atmoDist} {pos:?} {sunDir:?} {atmosphereRadiusMM}");
+fn transmittance(pos: vec3, sunDir: vec3) -> rgbf {
+	if intersect_ray_sphere(pos, sunDir, ground_radius_Mm) >= 0. { return rgbf::from(0.0); }
+	let atmosphere_t = intersect_ray_sphere(pos, sunDir, atmosphere_radius_Mm);
 	let mut t = 0.0;
 	let mut transmittance = rgbf::from(1.0);
-	const sunTransmittanceSteps : usize = 40;
-	for i in 0..sunTransmittanceSteps {
-		let newT = ((i as f32 + 0.3)/sunTransmittanceSteps as f32)*atmoDist;
+	const steps : usize = 40;
+	for i in 0..steps {
+		let newT = ((i as f32 + 0.3)/steps as f32)*atmosphere_t;
 		let dt = newT - t;
 		t = newT;
-		let newPos = pos + t*sunDir;
-		let (_, _, extinction) = getScatteringValues(newPos);
+		let (_, _, extinction) = scattering_extinction(pos + t*sunDir);
 		transmittance *= extinction.map(|e| exp(-dt*e));
 	}
 	transmittance
 }
 
-const mulScattSteps : usize = 20;
-const sqrtSamples : usize = 8;
+const multiple_scatterring_steps : usize = 20;
+const sqrt_samples : usize = 8;
 
-fn getMiePhase(cosTheta: f32) -> f32 {
+fn mie_phase(cos_theta: f32) -> f32 {
 	const g : f32 = 0.8;
-	const scale : f32 = 3./(8.*PI);
-	let num = (1.-g*g)*(1.+cosTheta*cosTheta);
-	let denom = (2.+g*g)*pow(1. + g*g - 2.*g*cosTheta, 3./2.);
-	scale*num/denom
+	3./(8.*PI)*(1.-g*g)*(1.+cos_theta*cos_theta)/((2.+g*g)*pow(1. + g*g - 2.*g*cos_theta, 3./2.))
 }
-fn getRayleighPhase(cosTheta: f32) -> f32 {
-	const k : f32 = 3.0/(16.0*PI);
-   	k*(1.0+cosTheta*cosTheta)
-}
-
-fn getMulScattValues(transmissionLUT: Image<&[rgbf]>, pos: vec3, sunDir: vec3) -> (rgbf, rgbf) {
-	let mut lumTotal = rgb::from(0.0);
-	let mut fms = rgb::from(0.0);
-	const invSamples: f32 = 1.0/(sqrtSamples*sqrtSamples) as f32;
-	for i in 0..sqrtSamples { for j in 0..sqrtSamples {
-		// This integral is symmetric about theta = 0 (or theta = PI), so we only need to integrate from zero to PI, not zero to 2*PI.
-		let theta = PI * (i as f32 + 1./2.) / sqrtSamples as f32;
-		let phi = acos(1. - 2.*(j as f32 + 1./2.) / sqrtSamples as f32);
-		let rayDir = getSphericalDir(theta, phi);
-		let atmoDist = rayIntersectSphere(pos, rayDir, atmosphereRadiusMM);
-		let groundDist = rayIntersectSphere(pos, rayDir, groundRadiusMM);
-		let tMax = if groundDist > 0. { groundDist } else { atmoDist };
-		let cosTheta = dot(rayDir, sunDir);
-		let miePhaseValue = getMiePhase(cosTheta);
-		let rayleighPhaseValue = getRayleighPhase(-cosTheta);
-
-		let mut lum = rgb::from(0.0);
-		let mut lumFactor = rgb::from(0.0);
-		let mut transmittance = rgb::from(1.0);
-		let mut t = 0.;
-		for stepI in 0..mulScattSteps {
-			let newT = ((stepI as f32+ 0.3)/mulScattSteps as f32)*tMax;
-			let dt = newT - t;
-			t = newT;
-			let newPos = pos + t*rayDir;
-			let (rayleighScattering, mieScattering, extinction) = getScatteringValues(newPos);
-			let sampleTransmittance = extinction.map(|e| exp(-dt*e));
-			// Integrate within each segment.
-			let scatteringNoPhase = rayleighScattering + rgb::from(mieScattering);
-			let scatteringF = (scatteringNoPhase - scatteringNoPhase * sampleTransmittance) / extinction;
-			lumFactor += transmittance*scatteringF;
-			// This is slightly different from the paper, but I think the paper has a mistake?
-			// In equation (6), I think S(x,w_s) should be S(x-tv,w_s).
-			let sunTransmittance = getValFromLUT(transmissionLUT.as_ref(), newPos, sunDir);
-			let rayleighInScattering = rayleighPhaseValue*rayleighScattering;
-			let mieInScattering = mieScattering*miePhaseValue;
-			let inScattering = (rayleighInScattering + rgb::from(mieInScattering))*sunTransmittance;
-			// Integrated scattering within path segment.
-			let scatteringIntegral = (inScattering - inScattering * sampleTransmittance) / extinction;
-			lum += scatteringIntegral*transmittance;
-			transmittance *= sampleTransmittance;
-		}
-
-		if groundDist > 0.0 {
-			if dot(pos, sunDir) > 0.0 {
-				let hitPos = groundRadiusMM*normalize(pos + groundDist*rayDir);
-				lum += transmittance*groundAlbedo*getValFromLUT(transmissionLUT.as_ref(), hitPos, sunDir);
-			}
-		}
-		fms += invSamples*lumFactor;
-		lumTotal += invSamples*lum;
-	}}
-	(lumTotal, fms)
-}
+fn rayleigh_phase(cos_theta: f32) -> f32 { 3./(16.*PI)*(1.+cos_theta*cos_theta) }
 
 impl Widget for App {
-fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, size: size, _: int2) -> Result<()> {
+fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, _: size, _: int2) -> Result<()> {
 	let Self{pass, ..} = self;
 
-	let tLUTRes = xy{x: 256, y: 64};
-	let transmittanceLUT = Image::from_xy(tLUTRes, |fragCoord| {
-		let u = fragCoord.x as f32/tLUTRes.x as f32;
-		let v = fragCoord.y as f32/tLUTRes.y as f32;
-		let sunCosTheta = 2.*u - 1.;
-		let sunTheta = acos(sunCosTheta);
-		let height = mix(groundRadiusMM, atmosphereRadiusMM, v);
-		let pos = xyz{x: 0., y: height, z: 0.};
-		let sunDir = normalize(xyz{x: 0., y: sunCosTheta, z: -sin(sunTheta)});
-		getSunTransmittance(pos, sunDir)
+	let transmittance_size = xy{x: 256, y: 64};
+	let transmittance_table = Image::from_xy(transmittance_size, |xy{x,y}| {
+		let u = x as f32/transmittance_size.x as f32;
+		let v = y as f32/transmittance_size.y as f32;
+		let cos_theta = 2.*u - 1.;
+		let height = mix(ground_radius_Mm, atmosphere_radius_Mm, v);
+		transmittance(xyz{x: 0., y: height, z: 0.}, normalize(xyz{x: 0., y: cos_theta, z: -(1.-sq(cos_theta))}))
 	});
-	{
-		let mut min = rgb::from(f32::INFINITY);
-		let mut max = rgb::from(f32::NEG_INFINITY);
-		for &v in &transmittanceLUT.data { 
-			use vector::ComponentWiseMinMax;
-			//for c in v { assert!(c.is_finite()); }
-			min = min.component_wise_min(v);
-			max = max.component_wise_max(v);
-		}
-		println!("transmittance {min:?} {max:?}");
-	}
-	
-	let msLUTRes = xy{x: 32, y: 32};
-	let multipleScatteringLUT = Image::from_xy(msLUTRes, |fragCoord| {
-		let u = fragCoord.x as f32/msLUTRes.x as f32;
-		let v = fragCoord.y as f32/msLUTRes.y as f32;
-		let sunCosTheta = 2.*u - 1.;
-		let sunTheta = acos(sunCosTheta);
-		let height = mix(groundRadiusMM, atmosphereRadiusMM, v);
-		let pos = xyz{x: 0., y: height, z: 0.};
-		let sunDir = normalize(xyz{x: 0., y: sunCosTheta, z: -sin(sunTheta)});
-		let (lum, f_ms) = getMulScattValues(transmittanceLUT.as_ref(), pos, sunDir);
-    	lum  / (rgb::from(1.) - f_ms) // psi
-	});
-	/*{
-		let mut min = rgb::from(f32::INFINITY);
-		let mut max = rgb::from(f32::NEG_INFINITY);
-		for &v in &multipleScatteringLUT.data { 
-			use vector::ComponentWiseMinMax;
-			min = min.component_wise_min(v);
-			max = max.component_wise_max(v);
-		}
-		println!("MS: {min:?} {max:?}");
-	}*/
-	
-	fn raymarchScattering(transmittanceLUT: Image<&[rgbf]>, multipleScatteringLUT: Image<&[rgbf]>, pos: vec3, rayDir: vec3, sunDir: vec3, tMax: f32) -> rgbf {
-		let cosTheta = dot(rayDir, sunDir);
-		let miePhaseValue = getMiePhase(cosTheta);
-		let rayleighPhaseValue = getRayleighPhase(-cosTheta);
-	    let mut lum = rgb::from(0.0);
-	    let mut transmittance = rgb::from(1.0);
-	    let mut t = 0.0;
-		const numSteps : i32 = 32;
-		for i in 0..numSteps {
-			let newT = ((i as f32 + 0.3)/numSteps as f32)*tMax;
-			let dt = newT - t;
-			t = newT;
-			let newPos = pos + t*rayDir;
-			let (rayleighScattering, mieScattering, extinction) = getScatteringValues(newPos);
-			let sampleTransmittance = extinction.map(|e| exp(-dt*e));
-			let sunTransmittance = getValFromLUT(transmittanceLUT.as_ref(), newPos, sunDir);
-			let psiMS = getValFromLUT(multipleScatteringLUT.as_ref(), newPos, sunDir);
-			let rayleighInScattering = rayleighScattering*(rayleighPhaseValue*sunTransmittance + psiMS);
-			let mieInScattering = mieScattering*(miePhaseValue*sunTransmittance + psiMS);
-			let inScattering = rayleighInScattering + mieInScattering;
-			let scatteringIntegral = (inScattering - sampleTransmittance * inScattering) / extinction;
-	        lum += scatteringIntegral*transmittance;
-	        transmittance *= sampleTransmittance;
-	    }
-	    lum
-	}
 
-	const viewPosY : f32 = groundRadiusMM + 0.0002; // 200m above the ground.
-	const viewPos : vec3 = xyz{x: 0., y: viewPosY, z: 0.};
+	let multiple_scattering_size = xy{x: 32, y: 32};
+	let multiple_scattering_table = Image::from_xy(multiple_scattering_size, |xy{x,y}| {
+		let u = x as f32/multiple_scattering_size.x as f32;
+		let v = y as f32/multiple_scattering_size.y as f32;
+		let cos_theta = 2.*u - 1.;
+		let height = mix(ground_radius_Mm, atmosphere_radius_Mm, v);
+		let position = xyz{x: 0., y: height, z: 0.};
+		let sun_direction = normalize(xyz{x: 0., y: cos_theta, z: -(1.-sq(cos_theta))});
+		let mut luminance_total = rgb::from(0.0);
+		let mut factor_multiple_scattering = rgb::from(0.0);
+		const rcp_samples: f32 = 1.0/(sqrt_samples*sqrt_samples) as f32;
+		for i in 0..sqrt_samples { for j in 0..sqrt_samples {
+			// This integral is symmetric about theta = 0 (or theta = PI), so we only need to integrate from zero to PI, not zero to 2*PI.
+			let theta = PI * (i as f32 + 1./2.) / sqrt_samples as f32;
+			let phi = acos(1. - 2.*(j as f32 + 1./2.) / sqrt_samples as f32);
+			let ray_direction = spherical(theta, phi);
+			let atmosphere_t = intersect_ray_sphere(position, ray_direction, atmosphere_radius_Mm);
+			let ground_t = intersect_ray_sphere(position, ray_direction, ground_radius_Mm);
+			let max_t = if ground_t >= 0. { ground_t } else { atmosphere_t };
+			let cos_theta = dot(ray_direction, sun_direction);
+			let mie_phase = mie_phase(cos_theta);
+			let rayleigh_phase = rayleigh_phase(-cos_theta);
+
+			let mut luminance = rgb::from(0.0);
+			let mut luminance_factor = rgb::from(0.0);
+			let mut transmittance = rgb::from(1.0);
+			let mut t = 0.;
+			for i in 0..multiple_scatterring_steps {
+				let new_t = ((i as f32+ 0.3)/multiple_scatterring_steps as f32)*max_t;
+				let dt = new_t - t;
+				t = new_t;
+				let new_position = position + t*ray_direction;
+				let (rayleigh_scattering, mie_scattering, extinction) = scattering_extinction(new_position);
+				let sample_transmittance = extinction.map(|e| exp(-dt*e));
+				let scattering_no_phase = rayleigh_scattering + rgb::from(mie_scattering);
+				let scattering_factor = (scattering_no_phase - scattering_no_phase * sample_transmittance) / extinction;
+				luminance_factor += transmittance*scattering_factor;
+				// This is slightly different from the paper, but I think the paper has a mistake?
+				// In equation (6), I think S(x,w_s) should be S(x-tv,w_s).
+				let sun_transmittance = lookup(transmittance_table.as_ref(), new_position, sun_direction);
+				let rayleigh_inscattering = rayleigh_phase*rayleigh_scattering;
+				let mie_inscattering = mie_scattering*mie_phase;
+				let inscattering = (rayleigh_inscattering + rgb::from(mie_inscattering))*sun_transmittance;
+				// Integrated scattering within path segment.
+				let scattering_integral = (inscattering - inscattering * sample_transmittance) / extinction;
+				luminance += scattering_integral*transmittance;
+				transmittance *= sample_transmittance;
+			}
+
+			if ground_t > 0.0 {
+				if dot(position, sun_direction) > 0.0 {
+					let hitPos = ground_radius_Mm*normalize(position + ground_t*ray_direction);
+					luminance += transmittance*ground_albedo*lookup(transmittance_table.as_ref(), hitPos, sun_direction);
+				}
+			}
+			factor_multiple_scattering += rcp_samples * luminance_factor;
+			luminance_total += rcp_samples * luminance;
+		}}
+    	luminance_total  / (rgb::from(1.) - factor_multiple_scattering) // psi
+	});
+
+	const view_position_y : f32 = ground_radius_Mm + 0.0002; // 200m above the ground.
+	const view_position : vec3 = xyz{x: 0., y: view_position_y, z: 0.};
 
 	let altitude = 0.;
-	let sunDir = xyz{x: 0., y: sin(altitude), z: -cos(altitude)};
+	let sun_direction = xyz{x: 0., y: sin(altitude), z: -cos(altitude)};
 
-	let skyLUTRes = xy{x: 200, y: 100};
-	let skyLUT = Image::from_xy(skyLUTRes, |xy| {
-		let xy{x: u, y: v} = vec2::from(xy)/vec2::from(skyLUTRes);
-    	let azimuthAngle = (u - 0.5)*2.0*PI;
-     	// Non-linear mapping of altitude. See Section 5.3 of the paper.
-		let adjV = if  v < 1./2. { -sq(1. - 2.*v) } else { sq(v*2. - 1.) };
-		//let up = xyz{x: 0., y: 1., z: 0.};
-
-		let horizonAngle = acos(sqrt(viewPosY * viewPosY - groundRadiusMM * groundRadiusMM) / viewPosY) - PI/2.;
-		let altitudeAngle = adjV*PI/2. - horizonAngle;
-		let cosAltitude = cos(altitudeAngle);
-		let rayDir = xyz{x: cosAltitude*sin(azimuthAngle), y: sin(altitudeAngle), z: -cosAltitude*cos(azimuthAngle)};
-		//let sunAltitude = (0.5*PI) - acos(dot(sunDir, up));
-
-		let atmoDist = rayIntersectSphere(viewPos, rayDir, atmosphereRadiusMM);
-	    let groundDist = rayIntersectSphere(viewPos, rayDir, groundRadiusMM);
-	    let tMax = if groundDist < 0. { atmoDist } else { groundDist };
-	    raymarchScattering(transmittanceLUT.as_ref(), multipleScatteringLUT.as_ref(), viewPos, rayDir, sunDir, tMax)
-	});
-	{
-		let mut min = rgb::from(f32::INFINITY);
-		let mut max = rgb::from(f32::NEG_INFINITY);
-		for &v in &skyLUT.data { 
-			use vector::ComponentWiseMinMax;
-			//for c in v { assert!(c.is_finite()); }
-			min = min.component_wise_min(v);
-			max = max.component_wise_max(v);
+	let sky_size = xy{x: 200, y: 100};
+	let sky_table = Image::from_xy(sky_size, |xy| {
+		let xy{x: u, y: v} = vec2::from(xy)/vec2::from(sky_size);
+    	let azimuth_angle = (u - 0.5)*2.0*PI;
+     	let v_parametrization = if  v < 1./2. { -sq(1. - 2.*v) } else { sq(v*2. - 1.) };
+		let horizon_angle = acos(sqrt(view_position_y * view_position_y - ground_radius_Mm * ground_radius_Mm) / view_position_y) - PI/2.;
+		let altitude_angle = v_parametrization*PI/2. - horizon_angle;
+		let cos_altitude = cos(altitude_angle);
+		let ray_direction = xyz{x: cos_altitude*sin(azimuth_angle), y: sin(altitude_angle), z: -cos_altitude*cos(azimuth_angle)};
+		let atmosphere_t = intersect_ray_sphere(view_position, ray_direction, atmosphere_radius_Mm);
+	    let ground_t = intersect_ray_sphere(view_position, ray_direction, ground_radius_Mm);
+	    let max_t = if ground_t < 0. { atmosphere_t } else { ground_t };
+		let cos_theta = dot(ray_direction, sun_direction);
+		let mie_phase = mie_phase(cos_theta);
+		let rayleigh_phase = rayleigh_phase(-cos_theta);
+	    let mut luminance = rgb::from(0.0);
+	    let mut transmittance = rgb::from(1.0);
+	    let mut t = 0.0;
+		const steps : i32 = 32;
+		for i in 0..steps {
+			let new_t = ((i as f32 + 0.3)/steps as f32)*max_t;
+			let dt = new_t - t;
+			t = new_t;
+			let new_position = view_position + t*ray_direction;
+			//assert!(norm(newPos) >= groundRadiusMM);
+			let (rayleigh_scattering, mie_scattering, extinction) = scattering_extinction(new_position);
+			let sample_transmittance = extinction.map(|e| exp(-dt*e));
+			let sun_transmittance = lookup(transmittance_table.as_ref(), new_position, sun_direction);
+			let psi_multiple_scattering = lookup(multiple_scattering_table.as_ref(), new_position, sun_direction);
+			let rayleigh_inscattering = rayleigh_scattering*(rayleigh_phase*sun_transmittance + psi_multiple_scattering);
+			let mie_inscattering = mie_scattering*(mie_phase*sun_transmittance + psi_multiple_scattering);
+			let inscattering = rayleigh_inscattering + mie_inscattering;
+			let scatteringIntegral = (inscattering - sample_transmittance * inscattering) / extinction;
+			luminance += scatteringIntegral*transmittance;
+			transmittance *= sample_transmittance;
 		}
-		println!("{min:?} {max:?}");
-	}
+		luminance
+		//rgb::from(tMax)
+	});
 	/*let image = Image::from_xy(size, |xy| {
 		let camDir = xyz{x: 0., y: 0., z: -1.};
     	let camFOVWidth = PI/3.;
@@ -296,7 +237,7 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 	let ref oetf = sRGB8_OETF12;
 	//let image = upload(context, commands, transmittanceLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
 	//let image = upload(context, commands, multipleScatteringLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
-	let image = upload(context, commands, skyLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
+	let image = upload(context, commands, sky_table.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
 	//let image = upload(context, commands, image.map(|v| rgba8::from(oetf8_12_rgb(oetf, v))).as_ref())?;
 	pass.begin_rendering(context, commands, target.clone(), None, true, &view::Uniforms::empty(), &[
 		WriteDescriptorSet::image_view(0, ImageView::new_default(&image)?),

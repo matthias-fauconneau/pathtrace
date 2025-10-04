@@ -21,3 +21,6 @@ image={path='../image'}
 
 [patch.'https://github.com/Matthias-Fauconneau/num']
 num={path='../num'}
+
+[profile.release]
+panic = "abort"
