@@ -1,7 +1,8 @@
 [
 	{
-		"label": "View",
-		"command": "cargo", "args": ["run" , "--release", "--", "/div2k"],
+		"label": "Run",
+		"command": "cargo", "args": ["run", "--release"],
+		//"env": {"RUST_BACKTRACE": "1"},
 		"use_new_terminal": false,
 		"allow_concurrent_runs": false,
 		"reveal": "no_focus",
