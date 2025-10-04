@@ -1,24 +1,15 @@
 #![feature(slice_from_ptr_range,iter_next_chunk)]#![allow(non_snake_case,non_upper_case_globals)]
 use ui::{Result, run, Widget, size, int2, vulkan, shader};
-use vulkan::{Context, Commands, Arc, image as upload, PrimitiveTopology, ImageView, WriteDescriptorSet, linear};
-use image::{Image, rgb, rgbf, bilinear_sample_wrap_x_clamp_y, sRGB8_OETF12, oetf8_12_rgb, rgba8};
+use vulkan::{Context, Commands, Arc, Image as GPUImage, image as upload, PrimitiveTopology, ImageView, WriteDescriptorSet, linear};
+use image::{Image, rgb, rgbf, bilinear_sample_wrap_x_clamp_y, rgba8};
 use {std::f32::consts::PI, num::{sq, sqrt, sin, cos, acos, abs}, vector::{xy, vec2, xyz, vec3, normalize, dot, norm}};
-use {num::{tan, atan, sign}, vector::cross};
+//use {num::{tan, atan, sign}, vector::cross};
 fn exp(x: f32) -> f32 { f32::exp(x) }
 fn pow(x: f32, k: f32) -> f32 { f32::powf(x, k) }
 //fn min(a: f32, b: f32) -> f32 { f32::min(a, b) }
 fn max(a: f32, b: f32) -> f32 { f32::max(a, b) }
 fn mix(x: f32, y: f32, a: f32) -> f32 { x*(1.-a)+y*a }
-shader!{view}
-
-struct App {
-	pass: view::Pass,
-}
-impl App {
-	fn new(context: &Context, _: &mut Commands) -> Result<Self> {
-		Ok(Self{pass: view::Pass::new(context, false, PrimitiveTopology::TriangleList, false)?})
-	}
-}
+shader!{sky}
 
 // https://www.shadertoy.com/view/slSXRW
 fn spherical(theta : f32, phi: f32) -> vec3 { xyz{x: sin(phi)*sin(theta), y: cos(phi), z: sin(phi)*cos(theta)} }
@@ -78,7 +69,7 @@ fn transmittance(pos: vec3, sunDir: vec3) -> rgbf {
 	transmittance
 }
 
-const multiple_scatterring_steps : usize = 20;
+const multiple_scattering_steps : usize = 20;
 const sqrt_samples : usize = 8;
 
 fn mie_phase(cos_theta: f32) -> f32 {
@@ -87,10 +78,7 @@ fn mie_phase(cos_theta: f32) -> f32 {
 }
 fn rayleigh_phase(cos_theta: f32) -> f32 { 3./(16.*PI)*(1.+cos_theta*cos_theta) }
 
-impl Widget for App {
-fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, size: size, _: int2) -> Result<()> {
-	let Self{pass, ..} = self;
-
+fn sky(context: &Context, commands: &mut Commands) -> Result<Arc<GPUImage>> {
 	let transmittance_size = xy{x: 256, y: 64};
 	let transmittance_table = Image::from_xy(transmittance_size, |xy{x,y}| {
 		let u = x as f32/transmittance_size.x as f32;
@@ -127,8 +115,8 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 			let mut luminance_factor = rgb::from(0.0);
 			let mut transmittance = rgb::from(1.0);
 			let mut t = 0.;
-			for i in 0..multiple_scatterring_steps {
-				let new_t = ((i as f32+ 0.3)/multiple_scatterring_steps as f32)*max_t;
+			for i in 0..multiple_scattering_steps {
+				let new_t = ((i as f32+ 0.3)/multiple_scattering_steps as f32)*max_t;
 				let dt = new_t - t;
 				t = new_t;
 				let new_position = position + t*ray_direction;
@@ -205,40 +193,25 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 		}
 		luminance
 	});
-	
-	let image = Image::from_xy(size, |xy| {
-		let xy = xy{x: xy.x, y: size.y-1-xy.y};
-		let view_direction = xyz{x: 0., y: 0., z: -1.};
-    	let view_fov_width = PI/3.;
-     	let view_width_scale = 2.*tan(view_fov_width/2.);
-      	let view_height_scale = view_width_scale*size.y as f32/size.x as f32;
-        let view_right = normalize(cross(view_direction, xyz{x: 0., y: 1., z: 0.}));
-        let view_up = normalize(cross(view_right, view_direction));
-        let xy = 2. * (vec2::from(xy) / vec2::from(size)) - vec2::from(1.);
-        let ray_direction = normalize(view_direction + xy.x*view_width_scale*view_right + xy.y*view_height_scale*view_up);
+	let ref oetf = image::sRGB8_OETF12; // reversed by texture lookup in fragment shader
+    upload(context, commands, sky_table.map(|v| rgba8::from(image::oetf8_12_rgb(oetf, v))).as_ref())
+}
 
-        fn lookup(ref sky_table: Image<&[rgbf]>, ray_direction: vec3, sun_direction: vec3) -> rgbf {
-            let up = xyz{x: 0., y: 1., z: 0.};
-            let horizon_angle = acos(sqrt(view_position_y * view_position_y - ground_radius_Mm * ground_radius_Mm) / view_position_y);
-            let altitude_angle = horizon_angle - acos(dot(ray_direction, up)); // Between -PI/2 and PI/2
-            let right = cross(sun_direction, up);
-            let forward = cross(up, right);
-            let projected_direction = normalize(ray_direction - dot(ray_direction, up)*up);
-            let sin_theta = dot(projected_direction, right);
-            let cos_theta = dot(projected_direction, forward);
-            let azimuth_angle = atan(sin_theta, cos_theta) + PI;
-            let v = 0.5 + 0.5*sign(altitude_angle)*sqrt(abs(altitude_angle)*2.0/PI); // Non-linear mapping of altitude angle. See Section 5.3 of the paper.
-            let uv = xy{x: azimuth_angle / (2.*PI), y: v};
-            bilinear_sample_wrap_x_clamp_y(sky_table, uv*vec2::from(sky_table.size))
-        }
+struct App {
+	pass: sky::Pass,
+	sky: Arc<GPUImage>,
+}
+impl App {
+	fn new(context: &Context, commands: &mut Commands) -> Result<Self> {
+		Ok(Self{pass: sky::Pass::new(context, false, PrimitiveTopology::TriangleList, false)?, sky: sky(context, commands)?})
+	}
+}
 
-        lookup(sky_table.as_ref(), ray_direction, sun_direction)
-	});
-	
-	let ref oetf = sRGB8_OETF12;
-	let image = upload(context, commands, image.map(|v| rgba8::from(oetf8_12_rgb(oetf, v))).as_ref())?;
-	pass.begin_rendering(context, commands, target.clone(), None, true, &view::Uniforms::empty(), &[
-		WriteDescriptorSet::image_view(0, ImageView::new_default(&image)?),
+impl Widget for App {
+fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, _: size, _: int2) -> Result<()> {
+	let Self{pass, sky} = self;
+	pass.begin_rendering(context, commands, target.clone(), None, true, &sky::Uniforms::empty(), &[
+		WriteDescriptorSet::image_view(0, ImageView::new_default(&sky)?),
 		WriteDescriptorSet::sampler(1, linear(context)),
 	])?;
 	unsafe{commands.draw(3, 1, 0, 0)}?;
