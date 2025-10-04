@@ -88,7 +88,7 @@ fn mie_phase(cos_theta: f32) -> f32 {
 fn rayleigh_phase(cos_theta: f32) -> f32 { 3./(16.*PI)*(1.+cos_theta*cos_theta) }
 
 impl Widget for App {
-fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, _: size, _: int2) -> Result<()> {
+fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, size: size, _: int2) -> Result<()> {
 	let Self{pass, ..} = self;
 
 	let transmittance_size = xy{x: 256, y: 64};
@@ -204,41 +204,39 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 			transmittance *= sample_transmittance;
 		}
 		luminance
-		//rgb::from(tMax)
 	});
-	/*let image = Image::from_xy(size, |xy| {
-		let camDir = xyz{x: 0., y: 0., z: -1.};
-    	let camFOVWidth = PI/3.;
-     	let camWidthScale = 2.*tan(camFOVWidth/2.);
-      	let camHeightScale = camWidthScale*size.y as f32/size.x as f32;
-        let camRight = normalize(cross(camDir, xyz{x: 0., y: 1., z: 0.}));
-        let camUp = normalize(cross(camRight, camDir));
+	
+	let image = Image::from_xy(size, |xy| {
+		let xy = xy{x: xy.x, y: size.y-1-xy.y};
+		let view_direction = xyz{x: 0., y: 0., z: -1.};
+    	let view_fov_width = PI/3.;
+     	let view_width_scale = 2.*tan(view_fov_width/2.);
+      	let view_height_scale = view_width_scale*size.y as f32/size.x as f32;
+        let view_right = normalize(cross(view_direction, xyz{x: 0., y: 1., z: 0.}));
+        let view_up = normalize(cross(view_right, view_direction));
         let xy = 2. * (vec2::from(xy) / vec2::from(size)) - vec2::from(1.);
-        let rayDir = normalize(camDir + xy.x*camWidthScale*camRight + xy.y*camHeightScale*camUp);
+        let ray_direction = normalize(view_direction + xy.x*view_width_scale*view_right + xy.y*view_height_scale*view_up);
 
-        fn getValFromSkyLUT(ref skyLUT: Image<&[rgbf]>, rayDir: vec3, sunDir: vec3) -> rgbf {
+        fn lookup(ref sky_table: Image<&[rgbf]>, ray_direction: vec3, sun_direction: vec3) -> rgbf {
             let up = xyz{x: 0., y: 1., z: 0.};
-            let horizonAngle = acos(sqrt(viewPosY * viewPosY - groundRadiusMM * groundRadiusMM) / viewPosY);
-            let altitudeAngle = horizonAngle - acos(dot(rayDir, up)); // Between -PI/2 and PI/2
-            let right = cross(sunDir, up);
+            let horizon_angle = acos(sqrt(view_position_y * view_position_y - ground_radius_Mm * ground_radius_Mm) / view_position_y);
+            let altitude_angle = horizon_angle - acos(dot(ray_direction, up)); // Between -PI/2 and PI/2
+            let right = cross(sun_direction, up);
             let forward = cross(up, right);
-            let projectedDir = normalize(rayDir - dot(rayDir, up)*up);
-            let sinTheta = dot(projectedDir, right);
-            let cosTheta = dot(projectedDir, forward);
-            let azimuthAngle = atan(sinTheta, cosTheta) + PI;
-            let v = 0.5 + 0.5*sign(altitudeAngle)*sqrt(abs(altitudeAngle)*2.0/PI); // Non-linear mapping of altitude angle. See Section 5.3 of the paper.
-            let uv = xy{x: azimuthAngle / (2.*PI), y: v};
-            bilinear_sample_wrap_x_clamp_y(skyLUT, uv*vec2::from(skyLUT.size))
+            let projected_direction = normalize(ray_direction - dot(ray_direction, up)*up);
+            let sin_theta = dot(projected_direction, right);
+            let cos_theta = dot(projected_direction, forward);
+            let azimuth_angle = atan(sin_theta, cos_theta) + PI;
+            let v = 0.5 + 0.5*sign(altitude_angle)*sqrt(abs(altitude_angle)*2.0/PI); // Non-linear mapping of altitude angle. See Section 5.3 of the paper.
+            let uv = xy{x: azimuth_angle / (2.*PI), y: v};
+            bilinear_sample_wrap_x_clamp_y(sky_table, uv*vec2::from(sky_table.size))
         }
 
-        //rgb{r: rayDir.x, g: rayDir.y, b: rayDir.z}
-        getValFromSkyLUT(skyLUT.as_ref(), rayDir, sunDir)
-	});*/
+        lookup(sky_table.as_ref(), ray_direction, sun_direction)
+	});
+	
 	let ref oetf = sRGB8_OETF12;
-	//let image = upload(context, commands, transmittanceLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
-	//let image = upload(context, commands, multipleScatteringLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
-	let image = upload(context, commands, sky_table.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
-	//let image = upload(context, commands, image.map(|v| rgba8::from(oetf8_12_rgb(oetf, v))).as_ref())?;
+	let image = upload(context, commands, image.map(|v| rgba8::from(oetf8_12_rgb(oetf, v))).as_ref())?;
 	pass.begin_rendering(context, commands, target.clone(), None, true, &view::Uniforms::empty(), &[
 		WriteDescriptorSet::image_view(0, ImageView::new_default(&image)?),
 		WriteDescriptorSet::sampler(1, linear(context)),
