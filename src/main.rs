@@ -9,6 +9,7 @@ fn min(a: f32, b: f32) -> f32 { f32::min(a, b) }
 fn max(a: f32, b: f32) -> f32 { f32::max(a, b) }
 //fn clamp(x: f32, min: f32, max: f32) -> f32 { f32::clamp(x, min, max) }
 fn mix(x: f32, y: f32, a: f32) -> f32 { x*(1.-a)+y*a }
+#[track_caller] fn check(v: rgbf) -> rgbf { for c in v.into_iter() { assert!(c.is_finite()); } v }
 shader!{view}
 
 struct App {
@@ -36,8 +37,8 @@ fn getValFromLUT(ref LUT: Image<&[rgbf]>, pos: vec3 , sunDir: vec3) -> rgbf {
 	let up = pos / height;
 	let sunCosZenithAngle = dot(sunDir, up);
 	let uv = xy{
-		x: (LUT.size.x-1) as f32*max(0., min(1., 1./2. + sunCosZenithAngle/2.)),
-		y: (LUT.size.y-1) as f32*max(0., min(1., (height - groundRadiusMM)/(atmosphereRadiusMM - groundRadiusMM)))
+		x: LUT.size.x as f32*max(0., min(1., 1./2. + sunCosZenithAngle/2.)),
+		y: LUT.size.y as f32*max(0., min(1., (height - groundRadiusMM)/(atmosphereRadiusMM - groundRadiusMM)))
 	};
 	bilinear_sample_wrap_x_clamp_y(LUT, uv)
 }
@@ -48,6 +49,7 @@ const groundAlbedo : rgbf = rgb{r: 0.3, g: 0.3, b: 0.3};
 
 fn getScatteringValues(pos: vec3) -> (rgbf, f32, rgbf) {
 	let altitudeKM = (norm(pos)-groundRadiusMM)*1000.0;
+	//assert!(altitudeKM >= 0., "{pos:?} {} {altitudeKM}", norm(pos));
 	let rayleighDensity = exp(-altitudeKM/8.0);
 	let mieDensity = exp(-altitudeKM/1.2);
 	const rayleighScatteringBase : rgbf = rgb{r: 5.802, g: 13.558, b: 33.1};
@@ -63,8 +65,9 @@ fn getScatteringValues(pos: vec3) -> (rgbf, f32, rgbf) {
 }
 
 fn getSunTransmittance(pos: vec3, sunDir: vec3) -> rgbf {
-	if rayIntersectSphere(pos, sunDir, groundRadiusMM) > 0. { return rgbf::from(0.0); }
+	if rayIntersectSphere(pos, sunDir, groundRadiusMM) >= 0. { return rgbf::from(0.0); }
 	let atmoDist = rayIntersectSphere(pos, sunDir, atmosphereRadiusMM);
+	assert!(atmoDist > 0., "{atmoDist} {pos:?} {sunDir:?} {atmosphereRadiusMM}");
 	let mut t = 0.0;
 	let mut transmittance = rgbf::from(1.0);
 	const sunTransmittanceSteps : usize = 40;
@@ -155,8 +158,8 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 
 	let tLUTRes = xy{x: 256, y: 64};
 	let transmittanceLUT = Image::from_xy(tLUTRes, |fragCoord| {
-		let u = fragCoord.x as f32/(tLUTRes.x-1) as f32;
-		let v = fragCoord.y as f32/(tLUTRes.y-1) as f32;
+		let u = fragCoord.x as f32/tLUTRes.x as f32;
+		let v = fragCoord.y as f32/tLUTRes.y as f32;
 		let sunCosTheta = 2.*u - 1.;
 		let sunTheta = acos(sunCosTheta);
 		let height = mix(groundRadiusMM, atmosphereRadiusMM, v);
@@ -164,11 +167,22 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 		let sunDir = normalize(xyz{x: 0., y: sunCosTheta, z: -sin(sunTheta)});
 		getSunTransmittance(pos, sunDir)
 	});
-
+	{
+		let mut min = rgb::from(f32::INFINITY);
+		let mut max = rgb::from(f32::NEG_INFINITY);
+		for &v in &transmittanceLUT.data { 
+			use vector::ComponentWiseMinMax;
+			//for c in v { assert!(c.is_finite()); }
+			min = min.component_wise_min(v);
+			max = max.component_wise_max(v);
+		}
+		println!("transmittance {min:?} {max:?}");
+	}
+	
 	let msLUTRes = xy{x: 32, y: 32};
 	let multipleScatteringLUT = Image::from_xy(msLUTRes, |fragCoord| {
-		let u = fragCoord.x as f32/(msLUTRes.x-1) as f32;
-		let v = fragCoord.y as f32/(msLUTRes.y-1) as f32;
+		let u = fragCoord.x as f32/msLUTRes.x as f32;
+		let v = fragCoord.y as f32/msLUTRes.y as f32;
 		let sunCosTheta = 2.*u - 1.;
 		let sunTheta = acos(sunCosTheta);
 		let height = mix(groundRadiusMM, atmosphereRadiusMM, v);
@@ -177,7 +191,17 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 		let (lum, f_ms) = getMulScattValues(transmittanceLUT.as_ref(), pos, sunDir);
     	lum  / (rgb::from(1.) - f_ms) // psi
 	});
-
+	/*{
+		let mut min = rgb::from(f32::INFINITY);
+		let mut max = rgb::from(f32::NEG_INFINITY);
+		for &v in &multipleScatteringLUT.data { 
+			use vector::ComponentWiseMinMax;
+			min = min.component_wise_min(v);
+			max = max.component_wise_max(v);
+		}
+		println!("MS: {min:?} {max:?}");
+	}*/
+	
 	fn raymarchScattering(transmittanceLUT: Image<&[rgbf]>, multipleScatteringLUT: Image<&[rgbf]>, pos: vec3, rayDir: vec3, sunDir: vec3, tMax: f32) -> rgbf {
 		let cosTheta = dot(rayDir, sunDir);
 		let miePhaseValue = getMiePhase(cosTheta);
@@ -230,7 +254,18 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 	    let tMax = if groundDist < 0. { atmoDist } else { groundDist };
 	    raymarchScattering(transmittanceLUT.as_ref(), multipleScatteringLUT.as_ref(), viewPos, rayDir, sunDir, tMax)
 	});
-	let image = Image::from_xy(size, |xy| {
+	{
+		let mut min = rgb::from(f32::INFINITY);
+		let mut max = rgb::from(f32::NEG_INFINITY);
+		for &v in &skyLUT.data { 
+			use vector::ComponentWiseMinMax;
+			//for c in v { assert!(c.is_finite()); }
+			min = min.component_wise_min(v);
+			max = max.component_wise_max(v);
+		}
+		println!("{min:?} {max:?}");
+	}
+	/*let image = Image::from_xy(size, |xy| {
 		let camDir = xyz{x: 0., y: 0., z: -1.};
     	let camFOVWidth = PI/3.;
      	let camWidthScale = 2.*tan(camFOVWidth/2.);
@@ -257,9 +292,12 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 
         //rgb{r: rayDir.x, g: rayDir.y, b: rayDir.z}
         getValFromSkyLUT(skyLUT.as_ref(), rayDir, sunDir)
-	});
+	});*/
 	let ref oetf = sRGB8_OETF12;
-	let image = upload(context, commands, image.map(|v| rgba8::from(oetf8_12_rgb(oetf, v))).as_ref())?;
+	//let image = upload(context, commands, transmittanceLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
+	//let image = upload(context, commands, multipleScatteringLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
+	let image = upload(context, commands, skyLUT.map(|v| rgba8::from(oetf8_12_rgb(oetf, v.map(|c| c.clamp(0.,1.))))).as_ref())?;
+	//let image = upload(context, commands, image.map(|v| rgba8::from(oetf8_12_rgb(oetf, v))).as_ref())?;
 	pass.begin_rendering(context, commands, target.clone(), None, true, &view::Uniforms::empty(), &[
 		WriteDescriptorSet::image_view(0, ImageView::new_default(&image)?),
 		WriteDescriptorSet::sampler(1, linear(context)),
