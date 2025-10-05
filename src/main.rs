@@ -153,7 +153,7 @@ fn tables() -> Tables {
 }
 
 fn sky((transmittance_table, multiple_scattering): &Tables, altitude: f32, context: &Context, commands: &mut Commands) -> Result<Arc<GPUImage>> {
-	const view_position_y : f32 = ground_radius_Mm + 0.0002; // 200m above the ground.
+	const view_position_y : f32 = ground_radius_Mm + 2e-6; // 2m above the ground.
 	const view_position : vec3 = xyz{x: 0., y: view_position_y, z: 0.};
 	let sun_direction = xyz{x: 0., y: sin(altitude), z: -cos(altitude)};
 	

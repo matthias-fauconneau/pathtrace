@@ -1,3 +1,4 @@
+const PI : f32 = radians(180.0);
 struct Uniforms { altitude : f32 }
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var image: texture_2d<f32>;
@@ -15,20 +16,11 @@ const texture_coordinates  = array(vec2(0., 0.), vec2(0., 2.), vec2(2., 0.));
 	return VertexOutput(vec4(position[vertex_index], 0., 1.), vec2(texture_coordinates[vertex_index]));
 }
 
-@fragment fn fragment(vertex: VertexOutput) -> @location(0) vec4<f32> {
-	let view_direction = vec3(0., 0., -1.);
-	const PI = radians(180.0);
-	let view_fov_width = PI/3.;
-	let view_width_scale = 2.*tan(view_fov_width/2.);
-	let view_height_scale = view_width_scale*2160./3840.;
-	let view_right = normalize(cross(view_direction, vec3(0., 1., 0.)));
-	let view_up = normalize(cross(view_right, view_direction));
-	//let vertex_position = vertex.texture_coordinates * 2. - 1.; // FIXME: vertex.position is weird
-	let vertex_position = vertex.texture_coordinates * 2. - vec2(1., 2.); // Horizon on bottom edge
-	let ray_direction = normalize(view_direction + vertex_position.x*view_width_scale*view_right - vertex_position.y*view_height_scale*view_up);
+const ground_radius_Mm : f32 = 6.360;
+const view_position_y : f32 = ground_radius_Mm + 2e-6; // 2m above the ground.
+
+fn atmosphere_luminance(ray_direction: vec3f) -> vec3f {
 	let up = vec3(0., 1., 0.);
-	const ground_radius_Mm : f32 = 6.360;
-	const view_position_y : f32 = ground_radius_Mm + 0.0002; // 200m above the ground.
 	let horizon_angle = acos(sqrt(view_position_y * view_position_y - ground_radius_Mm * ground_radius_Mm) / view_position_y);
 	let altitude_angle = horizon_angle - acos(dot(ray_direction, up)); // Between -PI/2 and PI/2
 	let sun_direction = vec3(0., sin(uniforms.altitude), -cos(uniforms.altitude));
@@ -38,6 +30,65 @@ const texture_coordinates  = array(vec2(0., 0.), vec2(0., 2.), vec2(2., 0.));
 	let sin_theta = dot(projected_direction, right);
 	let cos_theta = dot(projected_direction, forward);
 	let azimuth_angle = atan2(sin_theta, cos_theta) + PI;
-	let v = 0.5 + 0.5*sign(altitude_angle)*sqrt(abs(altitude_angle)*2.0/PI); // Non-linear mapping of altitude angle. See Section 5.3 of the paper.
-	return textureSample(image, linear, vec2(azimuth_angle / (2.*PI), v));
+	let v = 1./2. + 1./2.*sign(altitude_angle)*sqrt(abs(altitude_angle)*2./PI); // Non-linear mapping of altitude angle. See Section 5.3 of the paper.
+	return textureSample(image, linear, vec2(azimuth_angle / (2.*PI), v)).rgb;
+}
+
+fn intersect_ray_sphere(origin: vec3f, direction : vec3f, radius: f32) -> f32 {
+	let b = dot(origin, direction);
+	let c = dot(origin, origin) - radius*radius;
+	if c > 0. && b > 0. { return -1.; }
+	let discriminant = b*b - c;
+	if discriminant < 0. { return -1.; }
+	if discriminant > b*b { return -b + sqrt(discriminant); } else { return -b - sqrt(discriminant); };
+}
+
+fn trace(ray_direction : vec3f, seed: vec2f) -> vec3f {
+	var luminance = atmosphere_luminance(ray_direction);
+	if intersect_ray_sphere(vec3(0., view_position_y, 0.), ray_direction, ground_radius_Mm) > 0. {
+		const ground_albedo : f32 = 1.; //0.3;
+		luminance += ground_albedo * atmosphere_luminance(cosine(vec3(0.,1.,0.), seed, 1));
+	}
+	return luminance;
+}
+
+fn hash22(seed: vec2f, t: u32) -> vec2f {
+	let p1 = seed*f32(t+1)*.152 + 50.;
+	let p2 = fract(vec3(p1.xyx) * vec3(.1031, .1030, .0973));
+	let p3 = p2 + dot(p2, p2.yzx+33.33);
+	return fract((p3.xx+p3.yz)*p3.zy);
+}
+fn cosine(n: vec3f, seed: vec2f, t: u32) -> vec3f {
+	let u = hash22(seed, 0);
+	let r = sqrt(u.x);
+	let theta = 2.*PI*u.y;
+	let B = normalize(cross(n, vec3(0.,1.,1.)));
+	let T = cross(B, n);
+	return normalize(r * sin(theta) * B + sqrt(1.-u.x) * n + r * cos(theta) * T);
+}
+
+@fragment fn fragment(vertex: VertexOutput) -> @location(0) vec4<f32> {
+	//return textureSample(image, linear, vertex.texture_coordinates);
+	let view_direction = vec3(0., 0., -1.);
+	let view_fov_width = PI/3.;
+	let view_width_scale = 2.*tan(view_fov_width/2.);
+	let view_height_scale = view_width_scale*2160./3840.;
+	let view_right = normalize(cross(view_direction, vec3(0., 1., 0.)));
+	let view_up = normalize(cross(view_right, view_direction));
+	let vertex_position = vertex.texture_coordinates * 2. - 1.; // FIXME: vertex.position is weird
+	let ray_direction = normalize(view_direction + vertex_position.x*view_width_scale*view_right - vertex_position.y*view_height_scale*view_up);
+	let sphere_center = vec3(0., ground_radius_Mm+1e-6, -4e-6);
+	let ray_origin = vec3(0., view_position_y, 0.)-sphere_center;
+	let t = intersect_ray_sphere(ray_origin, ray_direction, 1e-6/*1m*/);
+	let seed = vertex.texture_coordinates * vec2(3840.,2160.);
+	if t > 0. {
+		let normal = normalize(ray_origin + t * ray_direction);
+		let incident = cosine(normal, seed, 0);
+		const sphere_albedo : f32 = 1.;
+		let luminance = sphere_albedo * trace(incident, seed);
+		return vec4(20.*luminance, 1.);
+	}
+	else {
+		return vec4(20.*trace(ray_direction, seed), 1.);
+	}
 }
