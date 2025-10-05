@@ -205,21 +205,28 @@ struct App {
 	altitude: f32,
 	last_altitude: f32,
 	sky: Arc<GPUImage>,
+	yaw: f32,
 }
 impl App {
 	fn new(context: &Context, commands: &mut Commands) -> Result<Self> {
 		let tables = tables();
-		Ok(Self{pass: sky::Pass::new(context, false, PrimitiveTopology::TriangleList, false)?, altitude: 0., last_altitude: 0., sky: sky(&tables, 0., context, commands)?, tables})
+		Ok(Self{
+			pass: sky::Pass::new(context, false, PrimitiveTopology::TriangleList, false)?,
+			altitude: 0., last_altitude: 0.,
+			sky: sky(&tables, 0., context, commands)?,
+			tables,
+			yaw: 0.
+		})
 	}
 }
 impl Widget for App {
 fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<ImageView>, _: size, _: int2) -> Result<()> {
-	let Self{pass, tables, altitude, last_altitude, sky} = self;
+	let Self{pass, tables, altitude, last_altitude, sky, yaw} = self;
 	if altitude != last_altitude {
 		*sky = self::sky(&tables, *altitude, context, commands)?;
 		*last_altitude = *altitude;
 	}
-	pass.begin_rendering(context, commands, target.clone(), None, true, &sky::Uniforms{altitude: *altitude}, &[
+	pass.begin_rendering(context, commands, target.clone(), None, true, &sky::Uniforms{altitude: *altitude, yaw: *yaw}, &[
 		WriteDescriptorSet::image_view(1, ImageView::new_default(&sky)?),
 		WriteDescriptorSet::sampler(2, linear(context)),
 	])?;
@@ -229,6 +236,7 @@ fn paint(&mut self, context: &Context, commands: &mut Commands, target: Arc<Imag
 }
 fn event(&mut self, _: &Context, _: &mut Commands, size: size, _: &mut EventContext, event: &Event) -> Result<bool> { Ok(match event {
 	Event::Motion{position, ..} => {
+		self.yaw = (position.x as f32 / size.x as f32) * 2.*PI;
 		self.altitude = (1. - position.y as f32 / size.y as f32) * PI/2.;
 		true
 	}

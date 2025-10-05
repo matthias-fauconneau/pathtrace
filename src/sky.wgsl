@@ -1,5 +1,5 @@
 const PI : f32 = radians(180.0);
-struct Uniforms { altitude : f32 }
+struct Uniforms { altitude : f32, yaw: f32 }
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 @group(0) @binding(1) var image: texture_2d<f32>;
 @group(0) @binding(2) var linear: sampler;
@@ -68,8 +68,10 @@ fn cosine(n: vec3f, seed: vec2f, t: u32) -> vec3f {
 }
 
 @fragment fn fragment(vertex: VertexOutput) -> @location(0) vec4<f32> {
-	//return textureSample(image, linear, vertex.texture_coordinates);
-	let view_direction = vec3(0., 0., -1.);
+	let r = 4e-6;
+	let view_position = vec3(r*sin(uniforms.yaw), view_position_y, -r*cos(uniforms.yaw));
+	let sphere_center = vec3(0., ground_radius_Mm+1e-6, 0.);
+	let view_direction = normalize(sphere_center-view_position);
 	let view_fov_width = PI/3.;
 	let view_width_scale = 2.*tan(view_fov_width/2.);
 	let view_height_scale = view_width_scale*2160./3840.;
@@ -77,8 +79,7 @@ fn cosine(n: vec3f, seed: vec2f, t: u32) -> vec3f {
 	let view_up = normalize(cross(view_right, view_direction));
 	let vertex_position = vertex.texture_coordinates * 2. - 1.; // FIXME: vertex.position is weird
 	let ray_direction = normalize(view_direction + vertex_position.x*view_width_scale*view_right - vertex_position.y*view_height_scale*view_up);
-	let sphere_center = vec3(0., ground_radius_Mm+1e-6, -4e-6);
-	let ray_origin = vec3(0., view_position_y, 0.)-sphere_center;
+	let ray_origin = view_position-sphere_center;
 	let t = intersect_ray_sphere(ray_origin, ray_direction, 1e-6/*1m*/);
 	let seed = vertex.texture_coordinates * vec2(3840.,2160.);
 	if t > 0. {
