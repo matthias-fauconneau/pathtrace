@@ -17,7 +17,8 @@ const texture_coordinates  = array(vec2(0., 0.), vec2(0., 2.), vec2(2., 0.));
 }
 
 const ground_radius_Mm : f32 = 6.360;
-const view_position_y : f32 = ground_radius_Mm + 2e-6; // 2m above the ground.
+const view_altitude : f32 = 2.;
+const view_position_y : f32 = ground_radius_Mm + view_altitude*1e-6; // 2m above the ground.
 
 fn atmosphere_luminance(ray_direction: vec3f) -> vec3f {
 	let up = vec3(0., 1., 0.);
@@ -62,9 +63,9 @@ fn cosine(n: vec3f, seed: vec2f, t: u32) -> vec3f {
 	let vertex_position = vertex.texture_coordinates * 2. - 1.; // FIXME: vertex.position is weird
 	let seed = vertex.texture_coordinates * vec2(3840.,2160.);
 
-	const r = 4e-6;
-	const sphere_center = vec3(0., ground_radius_Mm+1e-6, 0.);
-	let view_position = vec3(r*sin(uniforms.yaw), view_position_y, -r*cos(uniforms.yaw));
+	const r = 4.;
+	const sphere_center = vec3(0., 1., 0.);
+	let view_position = vec3(r*sin(uniforms.yaw), view_altitude, -r*cos(uniforms.yaw));
 	let view_direction = normalize(sphere_center-view_position);
 
 	let view_fov_width = PI/3.;
@@ -73,21 +74,21 @@ fn cosine(n: vec3f, seed: vec2f, t: u32) -> vec3f {
 	let view_right = normalize(cross(view_direction, vec3(0., 1., 0.)));
 	let view_up = normalize(cross(view_right, view_direction));
 
-	var ray_origin = view_position-sphere_center;
+	var ray_origin = view_position;
 	var ray_direction = normalize(view_direction + vertex_position.x*view_width_scale*view_right - vertex_position.y*view_height_scale*view_up);
 	var luminance = vec3(0.);
 	var transmittance = vec3(1.);
-	for(var bounce=0u; bounce<2; bounce+=1) { // FIXME: russian roulette on path importance
-		let t = intersect_ray_sphere(ray_origin, ray_direction, 1e-6/*1m*/);
-		if t > 0. {
+	for(var bounce=0u; bounce<5; bounce+=1) { // FIXME: russian roulette on path importance
+		let t = intersect_ray_sphere(ray_origin-sphere_center, ray_direction, 1.);
+		if t > 0.1 {
 			const sphere_albedo : f32 = 1.;
 			transmittance *= sphere_albedo;
 			ray_origin = ray_origin + t * ray_direction;
-			let normal = normalize(ray_origin);
-			let specular = ray_direction - 2.*dot(ray_direction, normal)*normal;
-			ray_direction = specular;//cosine(normal, seed, bounce);
+			let normal = normalize(ray_origin-sphere_center);
+			//ray_direction = normalize(ray_direction - 2.*dot(ray_direction, normal)*normal); // Specular
+			ray_direction = cosine(normal, seed, bounce);
 		} else {
-			let t = intersect_ray_sphere(vec3(0., view_position_y, 0.), ray_direction, ground_radius_Mm);
+			let t = intersect_ray_sphere(ray_origin*1e-6-vec3(0.,-ground_radius_Mm,0.), ray_direction, ground_radius_Mm);
 			if t > 0. {
 				const ground_albedo : f32 = 1.; //0.3;
 				transmittance *= ground_albedo;
