@@ -74,31 +74,39 @@ fn cosine(n: vec3f, seed: vec2f, t: u32) -> vec3f {
 	let view_right = normalize(cross(view_direction, vec3(0., 1., 0.)));
 	let view_up = normalize(cross(view_right, view_direction));
 
-	var ray_origin = view_position;
-	var ray_direction = normalize(view_direction + vertex_position.x*view_width_scale*view_right - vertex_position.y*view_height_scale*view_up);
 	var luminance = vec3(0.);
-	var transmittance = vec3(1.);
-	for(var bounce=0u; bounce<5; bounce+=1) { // FIXME: russian roulette on path importance
-		let t = intersect_ray_sphere(ray_origin-sphere_center, ray_direction, 1.);
-		if t > 0.1 {
-			const sphere_albedo : f32 = 1.;
-			transmittance *= sphere_albedo;
-			ray_origin = ray_origin + t * ray_direction;
-			let normal = normalize(ray_origin-sphere_center);
-			//ray_direction = normalize(ray_direction - 2.*dot(ray_direction, normal)*normal); // Specular
-			ray_direction = cosine(normal, seed, bounce);
-		} else {
-			let t = intersect_ray_sphere(ray_origin*1e-6-vec3(0.,-ground_radius_Mm,0.), ray_direction, ground_radius_Mm);
-			if t > 0. {
-				const ground_albedo : f32 = 1.; //0.3;
-				transmittance *= ground_albedo;
+	const samples = 16;
+	for(var sample=0u; sample<samples; sample+=1) {
+		var ray_origin = view_position;
+		var ray_direction = normalize(view_direction + vertex_position.x*view_width_scale*view_right - vertex_position.y*view_height_scale*view_up);
+		var transmittance = vec3(1.);
+		const bounces = 5;
+		var bounce=0u;
+		for(; bounce<bounces; bounce+=1) { // FIXME: russian roulette on path importance
+			let t = intersect_ray_sphere(ray_origin-sphere_center, ray_direction, 1.);
+			if t > 1e-5 {
+				const sphere_albedo : f32 = 0.4;
+				transmittance *= sphere_albedo;
 				ray_origin = ray_origin + t * ray_direction;
-				ray_direction = cosine(vec3(0.,1.,0.), seed, bounce);
+				let normal = normalize(ray_origin-sphere_center);
+				//ray_direction = normalize(ray_direction - 2.*dot(ray_direction, normal)*normal); // Specular
+				ray_direction = cosine(normal, seed, sample*bounces+bounce);
+				//return vec4(ray_origin, 1.);
 			} else {
-				luminance += transmittance * atmosphere_luminance(ray_direction);
-				break;
+				//let t = intersect_ray_sphere(ray_origin*1e-6-vec3(0.,-ground_radius_Mm,0.), ray_direction, ground_radius_Mm);
+				let t = - ray_origin.y / ray_direction.y;
+				if t > 0. {
+					const ground_albedo : f32 = 0.4;
+					transmittance *= ground_albedo;
+					ray_origin = ray_origin + t * ray_direction;
+					ray_direction = cosine(vec3(0.,1.,0.), seed, sample*bounces+bounce);
+				} else {
+					luminance += transmittance * atmosphere_luminance(ray_direction);
+					break;
+				}
 			}
 		}
+		if bounce == 0 { luminance *= f32(samples); break; } // Fast path for deterministic pixels (no diffuse bounces)
 	}
-	return vec4(20.*luminance, 1.);
+	return vec4(16.*luminance/f32(samples), 1.);
 }
